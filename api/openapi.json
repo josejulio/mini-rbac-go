@@ -1,0 +1,1448 @@
+{
+  "openapi": "3.0.0",
+  "info": {
+    "title": "Mini RBAC Go API",
+    "version": "2.0.0",
+    "description": "Role-Based Access Control API for managing roles, groups, permissions, and workspace hierarchies",
+    "contact": {
+      "name": "Mini RBAC Go",
+      "url": "https://github.com/redhat/mini-rbac-go"
+    }
+  },
+  "servers": [
+    {
+      "url": "http://localhost:8085/api/rbac/v2",
+      "description": "Local development server"
+    }
+  ],
+  "tags": [
+    {
+      "name": "Roles",
+      "description": "Role management operations"
+    },
+    {
+      "name": "Groups",
+      "description": "Group management operations"
+    },
+    {
+      "name": "Role Bindings",
+      "description": "Role assignment operations"
+    },
+    {
+      "name": "Workspaces",
+      "description": "Workspace hierarchy management operations"
+    }
+  ],
+  "paths": {
+    "/roles": {
+      "get": {
+        "tags": ["Roles"],
+        "summary": "List all roles",
+        "description": "Returns a paginated list of roles for the tenant",
+        "operationId": "listRoles",
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RoleListResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": ["Roles"],
+        "summary": "Create a new role",
+        "description": "Creates a new custom role with specified permissions",
+        "operationId": "createRole",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateRoleRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Role created successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Role"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/roles/{id}": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/RoleId"
+        }
+      ],
+      "get": {
+        "tags": ["Roles"],
+        "summary": "Get role by ID",
+        "description": "Returns a single role with its permissions",
+        "operationId": "getRole",
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Role"
+                }
+              }
+            }
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      },
+      "put": {
+        "tags": ["Roles"],
+        "summary": "Update role",
+        "description": "Updates an existing role's name, description, or permissions",
+        "operationId": "updateRole",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateRoleRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Role updated successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Role"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      },
+      "delete": {
+        "tags": ["Roles"],
+        "summary": "Delete role",
+        "description": "Deletes a role and all its associations",
+        "operationId": "deleteRole",
+        "responses": {
+          "204": {
+            "description": "Role deleted successfully"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      }
+    },
+    "/roles/:batchDelete": {
+      "post": {
+        "tags": ["Roles"],
+        "summary": "Batch delete roles",
+        "description": "Deletes multiple custom roles atomically (1-100 roles)",
+        "operationId": "batchDeleteRoles",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BatchDeleteRolesRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": "Roles deleted successfully"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      }
+    },
+    "/groups": {
+      "get": {
+        "tags": ["Groups"],
+        "summary": "List all groups",
+        "description": "Returns a paginated list of groups for the tenant",
+        "operationId": "listGroups",
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GroupListResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": ["Groups"],
+        "summary": "Create a new group",
+        "description": "Creates a new group",
+        "operationId": "createGroup",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateGroupRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Group created successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Group"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          }
+        }
+      }
+    },
+    "/groups/{id}": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/GroupId"
+        }
+      ],
+      "get": {
+        "tags": ["Groups"],
+        "summary": "Get group by ID",
+        "description": "Returns a single group",
+        "operationId": "getGroup",
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Group"
+                }
+              }
+            }
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      },
+      "put": {
+        "tags": ["Groups"],
+        "summary": "Update group",
+        "description": "Updates a group's name or description",
+        "operationId": "updateGroup",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateGroupRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Group updated successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Group"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      },
+      "delete": {
+        "tags": ["Groups"],
+        "summary": "Delete group",
+        "description": "Deletes a group and all its associations",
+        "operationId": "deleteGroup",
+        "responses": {
+          "204": {
+            "description": "Group deleted successfully"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      }
+    },
+    "/groups/{id}/principals": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/GroupId"
+        }
+      ],
+      "get": {
+        "tags": ["Groups"],
+        "summary": "List group principals",
+        "description": "Returns all principals (users) in a group",
+        "operationId": "listPrincipals",
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PrincipalListResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      },
+      "post": {
+        "tags": ["Groups"],
+        "summary": "Add principals to group",
+        "description": "Adds users to a group",
+        "operationId": "addPrincipals",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PrincipalsRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Principals added successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Group"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          }
+        }
+      },
+      "delete": {
+        "tags": ["Groups"],
+        "summary": "Remove principals from group",
+        "description": "Removes users from a group",
+        "operationId": "removePrincipals",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PrincipalsRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Principals removed successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Group"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          }
+        }
+      }
+    },
+    "/role-bindings": {
+      "get": {
+        "tags": ["Role Bindings"],
+        "summary": "List role bindings",
+        "description": "Returns role bindings, optionally filtered by resource",
+        "operationId": "listRoleBindings",
+        "parameters": [
+          {
+            "name": "resource_type",
+            "in": "query",
+            "description": "Filter by resource type",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "resource_id",
+            "in": "query",
+            "description": "Filter by resource ID",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RoleBindingListResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/role-bindings/:batchCreate": {
+      "post": {
+        "tags": ["Role Bindings"],
+        "summary": "Create multiple role bindings",
+        "description": "Creates multiple role bindings in a single request (1-100 bindings)",
+        "operationId": "batchCreateRoleBindings",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BatchCreateRoleBindingsRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Role bindings created successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BatchCreateRoleBindingsResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          }
+        }
+      }
+    },
+    "/role-bindings/by-subject": {
+      "get": {
+        "tags": ["Role Bindings"],
+        "summary": "List role bindings grouped by subject",
+        "description": "Returns role bindings for a specific resource, grouped by subject",
+        "operationId": "listRoleBindingsBySubject",
+        "parameters": [
+          {
+            "name": "resource_type",
+            "in": "query",
+            "required": true,
+            "description": "Resource type",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "resource_id",
+            "in": "query",
+            "required": true,
+            "description": "Resource ID",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "subject_type",
+            "in": "query",
+            "description": "Filter by subject type",
+            "schema": {
+              "type": "string",
+              "enum": ["group", "user"]
+            }
+          },
+          {
+            "name": "subject_id",
+            "in": "query",
+            "description": "Filter by subject ID",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "meta": {
+                      "$ref": "#/components/schemas/PaginationMeta"
+                    },
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/RoleBindingBySubject"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          }
+        }
+      },
+      "put": {
+        "tags": ["Role Bindings"],
+        "summary": "Update role bindings for a subject",
+        "description": "Replaces all role bindings for a specific subject on a resource",
+        "operationId": "updateRoleBindingsBySubject",
+        "parameters": [
+          {
+            "name": "resource_type",
+            "in": "query",
+            "required": true,
+            "description": "Resource type",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "resource_id",
+            "in": "query",
+            "required": true,
+            "description": "Resource ID",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "subject_type",
+            "in": "query",
+            "required": true,
+            "description": "Subject type",
+            "schema": {
+              "type": "string",
+              "enum": ["group", "user"]
+            }
+          },
+          {
+            "name": "subject_id",
+            "in": "query",
+            "required": true,
+            "description": "Subject UUID",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateRoleBindingBySubjectRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Role bindings updated successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RoleBindingBySubject"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          }
+        }
+      }
+    },
+    "/workspaces": {
+      "get": {
+        "tags": ["Workspaces"],
+        "summary": "List all workspaces",
+        "description": "Returns a paginated list of workspaces for the tenant",
+        "operationId": "listWorkspaces",
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkspaceListResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": ["Workspaces"],
+        "summary": "Create a new workspace",
+        "description": "Creates a new workspace with optional parent",
+        "operationId": "createWorkspace",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateWorkspaceRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Workspace created successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Workspace"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          }
+        }
+      }
+    },
+    "/workspaces/{id}": {
+      "get": {
+        "tags": ["Workspaces"],
+        "summary": "Get workspace by ID",
+        "description": "Returns a single workspace, optionally with ancestry information",
+        "operationId": "getWorkspace",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "description": "Workspace UUID"
+          },
+          {
+            "name": "include_ancestry",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false
+            },
+            "description": "Include ancestry field with all ancestor workspaces"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Workspace"
+                }
+              }
+            }
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      },
+      "put": {
+        "tags": ["Workspaces"],
+        "summary": "Update workspace",
+        "description": "Updates workspace name and description",
+        "operationId": "updateWorkspace",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "description": "Workspace UUID"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateWorkspaceRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Workspace updated successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Workspace"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      },
+      "delete": {
+        "tags": ["Workspaces"],
+        "summary": "Delete workspace",
+        "description": "Deletes a workspace (must not have children)",
+        "operationId": "deleteWorkspace",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "description": "Workspace UUID"
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Workspace deleted successfully"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      }
+    },
+    "/workspaces/{id}/move": {
+      "post": {
+        "tags": ["Workspaces"],
+        "summary": "Move workspace to a new parent",
+        "description": "Moves a workspace under a new parent. Validates hierarchy constraints.",
+        "operationId": "moveWorkspace",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "description": "Workspace UUID to move"
+          },
+          {
+            "name": "parent_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "description": "UUID of the new parent workspace"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Workspace moved successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Workspace"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "Role": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Role unique identifier"
+          },
+          "name": {
+            "type": "string",
+            "description": "Role name"
+          },
+          "description": {
+            "type": "string",
+            "description": "Role description"
+          },
+          "permissions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Permission"
+            }
+          },
+          "last_modified": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Last modification timestamp"
+          }
+        }
+      },
+      "Permission": {
+        "type": "object",
+        "properties": {
+          "application": {
+            "type": "string",
+            "description": "Application name",
+            "example": "inventory"
+          },
+          "resource_type": {
+            "type": "string",
+            "description": "Resource type",
+            "example": "hosts"
+          },
+          "permission": {
+            "type": "string",
+            "description": "Permission/verb",
+            "example": "read"
+          }
+        },
+        "required": ["application", "resource_type", "permission"]
+      },
+      "CreateRoleRequest": {
+        "type": "object",
+        "required": ["name", "description", "permissions"],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Role name",
+            "example": "Inventory Manager"
+          },
+          "description": {
+            "type": "string",
+            "description": "Role description",
+            "example": "Manage inventory resources"
+          },
+          "permissions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Permission"
+            },
+            "minItems": 1
+          }
+        }
+      },
+      "UpdateRoleRequest": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Updated role name"
+          },
+          "description": {
+            "type": "string",
+            "description": "Updated role description"
+          },
+          "permissions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Permission"
+            }
+          }
+        }
+      },
+      "BatchDeleteRolesRequest": {
+        "type": "object",
+        "required": ["ids"],
+        "properties": {
+          "ids": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 100,
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "description": "List of role UUIDs to delete (1-100)",
+            "example": ["role-uuid-1", "role-uuid-2"]
+          }
+        }
+      },
+      "RoleListResponse": {
+        "type": "object",
+        "properties": {
+          "meta": {
+            "$ref": "#/components/schemas/PaginationMeta"
+          },
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Role"
+            }
+          }
+        }
+      },
+      "Group": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Group unique identifier"
+          },
+          "name": {
+            "type": "string",
+            "description": "Group name"
+          },
+          "description": {
+            "type": "string",
+            "description": "Group description"
+          },
+          "created": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Creation timestamp"
+          },
+          "modified": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Last modification timestamp"
+          }
+        }
+      },
+      "CreateGroupRequest": {
+        "type": "object",
+        "required": ["name"],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Group name",
+            "example": "Engineering Team"
+          },
+          "description": {
+            "type": "string",
+            "description": "Group description",
+            "example": "Engineering department group"
+          }
+        }
+      },
+      "UpdateGroupRequest": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Updated group name"
+          },
+          "description": {
+            "type": "string",
+            "description": "Updated group description"
+          }
+        }
+      },
+      "GroupListResponse": {
+        "type": "object",
+        "properties": {
+          "meta": {
+            "$ref": "#/components/schemas/PaginationMeta"
+          },
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Group"
+            }
+          }
+        }
+      },
+      "PrincipalsRequest": {
+        "type": "object",
+        "required": ["principals"],
+        "properties": {
+          "principals": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "List of user IDs (email addresses)",
+            "example": ["alice@example.com", "bob@example.com"]
+          }
+        }
+      },
+      "PrincipalResponse": {
+        "type": "object",
+        "properties": {
+          "user_id": {
+            "type": "string",
+            "description": "User ID (email address)",
+            "example": "alice@example.com"
+          }
+        }
+      },
+      "PrincipalListResponse": {
+        "type": "object",
+        "properties": {
+          "meta": {
+            "$ref": "#/components/schemas/PaginationMeta"
+          },
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PrincipalResponse"
+            }
+          }
+        }
+      },
+      "BatchCreateRoleBindingsRequest": {
+        "type": "object",
+        "required": ["requests"],
+        "properties": {
+          "requests": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 100,
+            "items": {
+              "$ref": "#/components/schemas/CreateBindingItem"
+            },
+            "description": "List of role binding creation requests (1-100)"
+          }
+        }
+      },
+      "CreateBindingItem": {
+        "type": "object",
+        "required": ["resource", "subject", "role"],
+        "properties": {
+          "resource": {
+            "$ref": "#/components/schemas/BindingResourceRequest"
+          },
+          "subject": {
+            "$ref": "#/components/schemas/BindingSubjectRequest"
+          },
+          "role": {
+            "$ref": "#/components/schemas/BindingRoleRequest"
+          }
+        }
+      },
+      "BindingResourceRequest": {
+        "type": "object",
+        "required": ["id", "type"],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Resource ID",
+            "example": "workspace-uuid"
+          },
+          "type": {
+            "type": "string",
+            "description": "Resource type",
+            "example": "workspace"
+          }
+        }
+      },
+      "BindingSubjectRequest": {
+        "type": "object",
+        "required": ["id", "type"],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Subject UUID"
+          },
+          "type": {
+            "type": "string",
+            "enum": ["group", "user"],
+            "description": "Subject type"
+          }
+        }
+      },
+      "BindingRoleRequest": {
+        "type": "object",
+        "required": ["id"],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Role UUID"
+          }
+        }
+      },
+      "BatchCreateRoleBindingsResponse": {
+        "type": "object",
+        "properties": {
+          "role_bindings": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RoleBindingItem"
+            }
+          }
+        }
+      },
+      "RoleBindingItem": {
+        "type": "object",
+        "properties": {
+          "role": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "format": "uuid"
+              }
+            }
+          },
+          "subject": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "type": {
+                "type": "string",
+                "enum": ["group", "user"]
+              }
+            }
+          },
+          "resource": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      },
+      "RoleBindingBySubject": {
+        "type": "object",
+        "properties": {
+          "subject": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "type": {
+                "type": "string",
+                "enum": ["group", "user"]
+              }
+            }
+          },
+          "roles": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "format": "uuid"
+                }
+              }
+            }
+          },
+          "resource": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      },
+      "UpdateRoleBindingBySubjectRequest": {
+        "type": "object",
+        "required": ["roles"],
+        "properties": {
+          "roles": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "$ref": "#/components/schemas/BindingRoleRequest"
+            },
+            "description": "Roles to assign to the subject (replaces existing)"
+          }
+        }
+      },
+      "RoleBindingListResponse": {
+        "type": "object",
+        "properties": {
+          "meta": {
+            "$ref": "#/components/schemas/PaginationMeta"
+          },
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RoleBindingItem"
+            }
+          }
+        }
+      },
+      "PaginationMeta": {
+        "type": "object",
+        "properties": {
+          "count": {
+            "type": "integer",
+            "description": "Number of items in current response"
+          }
+        }
+      },
+      "Workspace": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Workspace UUID"
+          },
+          "name": {
+            "type": "string",
+            "description": "Workspace name",
+            "example": "Engineering"
+          },
+          "description": {
+            "type": "string",
+            "description": "Workspace description",
+            "example": "Engineering department workspace"
+          },
+          "type": {
+            "type": "string",
+            "enum": ["root", "default", "standard"],
+            "description": "Workspace type"
+          },
+          "parent_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Parent workspace UUID",
+            "nullable": true
+          },
+          "created": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Creation timestamp"
+          },
+          "modified": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Last modification timestamp"
+          }
+        }
+      },
+      "CreateWorkspaceRequest": {
+        "type": "object",
+        "required": ["name"],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Workspace name",
+            "example": "Engineering"
+          },
+          "description": {
+            "type": "string",
+            "description": "Workspace description",
+            "example": "Engineering department workspace"
+          },
+          "type": {
+            "type": "string",
+            "enum": ["root", "default", "standard"],
+            "description": "Workspace type (default: standard)",
+            "default": "standard"
+          },
+          "parent_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Parent workspace UUID (optional)"
+          }
+        }
+      },
+      "UpdateWorkspaceRequest": {
+        "type": "object",
+        "required": ["name"],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Workspace name",
+            "example": "Updated Engineering"
+          },
+          "description": {
+            "type": "string",
+            "description": "Workspace description",
+            "example": "Updated description"
+          }
+        }
+      },
+      "WorkspaceListResponse": {
+        "type": "object",
+        "properties": {
+          "meta": {
+            "$ref": "#/components/schemas/PaginationMeta"
+          },
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Workspace"
+            }
+          }
+        }
+      },
+      "Error": {
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string",
+            "description": "Error title"
+          },
+          "detail": {
+            "type": "string",
+            "description": "Detailed error message"
+          },
+          "status": {
+            "type": "integer",
+            "description": "HTTP status code"
+          }
+        }
+      }
+    },
+    "parameters": {
+      "RoleId": {
+        "name": "id",
+        "in": "path",
+        "required": true,
+        "description": "Role UUID",
+        "schema": {
+          "type": "string",
+          "format": "uuid"
+        }
+      },
+      "GroupId": {
+        "name": "id",
+        "in": "path",
+        "required": true,
+        "description": "Group UUID",
+        "schema": {
+          "type": "string",
+          "format": "uuid"
+        }
+      }
+    },
+    "responses": {
+      "BadRequest": {
+        "description": "Bad request",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
+      },
+      "NotFound": {
+        "description": "Resource not found",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
+      },
+      "InternalError": {
+        "description": "Internal server error",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
+      }
+    }
+  }
+}

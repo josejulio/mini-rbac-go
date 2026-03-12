@@ -1,0 +1,34 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: mini-rbac-postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: rbac
+    ports:
+      - "15432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # Optional: Kessel relations-api for full functionality
+  # Uncomment when you have Kessel setup
+  # kessel:
+  #   image: quay.io/project-kessel/relations-api:latest
+  #   container_name: mini-rbac-kessel
+  #   ports:
+  #     - "9000:9000"
+  #   environment:
+  #     - SPICEDB_ENDPOINT=spicedb:50051
+  #   depends_on:
+  #     - spicedb
+
+volumes:
+  postgres_data:
