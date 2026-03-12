@@ -197,8 +197,7 @@ type RoleBindingListItem struct {
 type CreateWorkspaceRequest struct {
 	Name        string `json:"name"`
 	Description string `json:"description,omitempty"`
-	Type        string `json:"type,omitempty"`        // "root", "default", or "standard"
-	ParentID    string `json:"parent_id,omitempty"`   // UUID of parent workspace
+	ParentID    string `json:"parent_id,omitempty"`   // UUID of parent workspace (defaults to default workspace if not provided)
 }
 
 // UpdateWorkspaceRequest represents a request to update a workspace

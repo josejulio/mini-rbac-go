@@ -134,8 +134,14 @@ func (s *GroupService) Delete(ctx context.Context, groupUUID uuid.UUID, tenantID
 		return fmt.Errorf("failed to generate replication tuples: %w", err)
 	}
 
+	// Clear associations before deleting (many-to-many join table)
+	if err := tx.Model(existingGroup).Association("Principals").Clear(); err != nil {
+		tx.Rollback()
+		return fmt.Errorf("failed to clear group principals: %w", err)
+	}
+
 	// Delete group
-	if err := s.groupRepo.Delete(groupUUID); err != nil {
+	if err := tx.Delete(existingGroup).Error; err != nil {
 		tx.Rollback()
 		return fmt.Errorf("failed to delete group: %w", err)
 	}
@@ -203,8 +209,8 @@ func (s *GroupService) AddPrincipals(ctx context.Context, input AddPrincipalsInp
 	}()
 
 	// Fetch group
-	g, err := s.groupRepo.FindByUUID(input.GroupUUID)
-	if err != nil {
+	var g group.Group
+	if err := tx.Preload("Principals").First(&g, "uuid = ?", input.GroupUUID).Error; err != nil {
 		tx.Rollback()
 		return fmt.Errorf("group not found: %w", err)
 	}
@@ -217,33 +223,32 @@ func (s *GroupService) AddPrincipals(ctx context.Context, input AddPrincipalsInp
 	// Fetch or create principals
 	var newPrincipals []*group.Principal
 	for _, userID := range input.UserIDs {
-		p, err := s.principalRepo.FindByUserID(userID)
+		var p group.Principal
+		err := tx.Where("user_id = ?", userID).First(&p).Error
 		if err != nil {
 			// Create principal if not exists
-			p = &group.Principal{
+			p = group.Principal{
 				UserID:   userID,
 				Type:     group.PrincipalTypeUser,
 				TenantID: input.TenantID,
 			}
-			if err := s.principalRepo.Create(p); err != nil {
+			if err := tx.Create(&p).Error; err != nil {
 				tx.Rollback()
 				return fmt.Errorf("failed to create principal: %w", err)
 			}
 		}
-		newPrincipals = append(newPrincipals, p)
+		newPrincipals = append(newPrincipals, &p)
 	}
 
 	// Get existing principals
 	oldPrincipals := g.Principals
 
-	// Update group principals (append new ones)
-	// In real implementation, would handle duplicates
-	g.Principals = append(g.Principals, newPrincipals...)
-
-	if err := s.groupRepo.Update(g); err != nil {
+	// Update group principals (append new ones) using Association for many-to-many
+	if err := tx.Model(&g).Association("Principals").Append(newPrincipals); err != nil {
 		tx.Rollback()
-		return fmt.Errorf("failed to update group: %w", err)
+		return fmt.Errorf("failed to add principals to group: %w", err)
 	}
+	g.Principals = append(g.Principals, newPrincipals...)
 
 	// Generate replication tuples (only new principals)
 	tuplesToAdd, _, err := g.ReplicationTuples(oldPrincipals, g.Principals)
@@ -296,8 +301,8 @@ func (s *GroupService) RemovePrincipals(ctx context.Context, input RemovePrincip
 	}()
 
 	// Fetch group
-	g, err := s.groupRepo.FindByUUID(input.GroupUUID)
-	if err != nil {
+	var g group.Group
+	if err := tx.Preload("Principals").First(&g, "uuid = ?", input.GroupUUID).Error; err != nil {
 		tx.Rollback()
 		return fmt.Errorf("group not found: %w", err)
 	}
@@ -324,12 +329,12 @@ func (s *GroupService) RemovePrincipals(ctx context.Context, input RemovePrincip
 		}
 	}
 
-	g.Principals = remainingPrincipals
-
-	if err := s.groupRepo.Update(g); err != nil {
+	// Update group principals using Association for many-to-many
+	if err := tx.Model(&g).Association("Principals").Replace(remainingPrincipals); err != nil {
 		tx.Rollback()
-		return fmt.Errorf("failed to update group: %w", err)
+		return fmt.Errorf("failed to update group principals: %w", err)
 	}
+	g.Principals = remainingPrincipals
 
 	// Generate replication tuples
 	_, tuplesToRemove, err := g.ReplicationTuples(oldPrincipals, g.Principals)

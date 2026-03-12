@@ -21,15 +21,15 @@ const (
 // RoleV2 represents a V2 role in the system
 // Mirrors the Python RoleV2 model
 type RoleV2 struct {
-	ID          uint         `gorm:"primarykey"`
-	UUID        uuid.UUID    `gorm:"type:uuid;uniqueIndex;not null"`
-	Name        string       `gorm:"size:175;not null;index:idx_role_name_tenant,unique"`
-	Description *string      `gorm:"type:text"`
-	Type        RoleType     `gorm:"size:20;not null;index"`
-	TenantID    uuid.UUID    `gorm:"type:uuid;not null;index:idx_role_name_tenant,unique"`
-	Permissions []Permission `gorm:"many2many:role_permissions;"`
-	Created     time.Time    `gorm:"autoCreateTime"`
-	Modified    time.Time    `gorm:"autoUpdateTime"`
+	ID          uint              `gorm:"primarykey"`
+	UUID        uuid.UUID         `gorm:"type:uuid;uniqueIndex;not null"`
+	Name        string            `gorm:"size:175;not null;index:idx_role_name_tenant,unique"`
+	Description *string           `gorm:"type:text"`
+	Type        RoleType          `gorm:"size:20;not null;index"`
+	TenantID    uuid.UUID         `gorm:"type:uuid;not null;index:idx_role_name_tenant,unique"`
+	Permissions []PermissionValue `gorm:"type:jsonb;serializer:json"`
+	Created     time.Time         `gorm:"autoCreateTime"`
+	Modified    time.Time         `gorm:"autoUpdateTime"`
 }
 
 // TableName specifies the table name for GORM
@@ -55,7 +55,7 @@ func (r *RoleV2) Validate() error {
 
 // PermissionTuple generates a single permission tuple for custom roles
 // Format: rbac/role:<uuid>#<permission>@rbac/principal:*
-func (r *RoleV2) PermissionTuple(permission *Permission) (*common.RelationTuple, error) {
+func (r *RoleV2) PermissionTuple(permission *PermissionValue) (*common.RelationTuple, error) {
 	if r.Type != RoleTypeCustom {
 		return nil, fmt.Errorf("permission tuples only supported for custom roles")
 	}
@@ -87,25 +87,26 @@ func (r *RoleV2) PermissionTuple(permission *Permission) (*common.RelationTuple,
 
 // ReplicationTuples computes the delta (tuples to add vs. remove) for a role mutation
 // Mirrors the Python CustomRoleV2.replication_tuples static method
-func (r *RoleV2) ReplicationTuples(oldPermissions, newPermissions []*Permission) (toAdd, toRemove []*common.RelationTuple, err error) {
+func (r *RoleV2) ReplicationTuples(oldPermissions, newPermissions []PermissionValue) (toAdd, toRemove []*common.RelationTuple, err error) {
 	if r.Type != RoleTypeCustom {
 		return nil, nil, fmt.Errorf("replication only supported for custom roles")
 	}
 
-	// Convert to maps for set operations
-	oldSet := make(map[uint]bool)
+	// Convert to maps for set operations (use V2String as key)
+	oldSet := make(map[string]bool)
 	for _, p := range oldPermissions {
-		oldSet[p.ID] = true
+		oldSet[p.V2String()] = true
 	}
 
-	newSet := make(map[uint]bool)
+	newSet := make(map[string]bool)
 	for _, p := range newPermissions {
-		newSet[p.ID] = true
+		newSet[p.V2String()] = true
 	}
 
 	// Permissions to add (in new but not in old)
-	for _, p := range newPermissions {
-		if !oldSet[p.ID] {
+	for i := range newPermissions {
+		p := &newPermissions[i]
+		if !oldSet[p.V2String()] {
 			tuple, err := r.PermissionTuple(p)
 			if err != nil {
 				return nil, nil, err
@@ -115,8 +116,9 @@ func (r *RoleV2) ReplicationTuples(oldPermissions, newPermissions []*Permission)
 	}
 
 	// Permissions to remove (in old but not in new)
-	for _, p := range oldPermissions {
-		if !newSet[p.ID] {
+	for i := range oldPermissions {
+		p := &oldPermissions[i]
+		if !newSet[p.V2String()] {
 			tuple, err := r.PermissionTuple(p)
 			if err != nil {
 				return nil, nil, err

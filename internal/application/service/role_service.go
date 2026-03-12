@@ -16,11 +16,10 @@ import (
 // RoleV2Service handles business logic for RoleV2 operations
 // Mirrors the Python RoleV2Service
 type RoleV2Service struct {
-	roleRepo       role.RoleRepository
-	permissionRepo role.PermissionRepository
-	bindingRepo    rolebinding.Repository
-	replicator     Replicator
-	db             *gorm.DB
+	roleRepo    role.RoleRepository
+	bindingRepo rolebinding.Repository
+	replicator  Replicator
+	db          *gorm.DB
 }
 
 // Replicator interface for relation replication
@@ -31,17 +30,15 @@ type Replicator interface {
 // NewRoleV2Service creates a new RoleV2Service
 func NewRoleV2Service(
 	roleRepo role.RoleRepository,
-	permissionRepo role.PermissionRepository,
 	bindingRepo rolebinding.Repository,
 	replicator Replicator,
 	db *gorm.DB,
 ) *RoleV2Service {
 	return &RoleV2Service{
-		roleRepo:       roleRepo,
-		permissionRepo: permissionRepo,
-		bindingRepo:    bindingRepo,
-		replicator:     replicator,
-		db:             db,
+		roleRepo:    roleRepo,
+		bindingRepo: bindingRepo,
+		replicator:  replicator,
+		db:          db,
 	}
 }
 
@@ -66,10 +63,22 @@ func (s *RoleV2Service) Create(ctx context.Context, input CreateRoleInput) (*rol
 		return nil, fmt.Errorf("permissions are required")
 	}
 
-	// Resolve permissions
-	permissions, err := s.permissionRepo.ResolveFromV2Data(input.Permissions)
-	if err != nil {
-		return nil, fmt.Errorf("failed to resolve permissions: %w", err)
+	// Parse permissions from input
+	permissions := make([]role.PermissionValue, 0, len(input.Permissions))
+	for _, permData := range input.Permissions {
+		app, appOk := permData["application"]
+		resType, resOk := permData["resource_type"]
+		verb, verbOk := permData["permission"]
+
+		if !appOk || !resOk || !verbOk {
+			return nil, fmt.Errorf("invalid permission format: missing application, resource_type, or permission")
+		}
+
+		permissions = append(permissions, role.PermissionValue{
+			Application:  app,
+			ResourceType: resType,
+			Verb:         verb,
+		})
 	}
 
 	// Start transaction
@@ -84,44 +93,29 @@ func (s *RoleV2Service) Create(ctx context.Context, input CreateRoleInput) (*rol
 	}()
 
 	// Create role
-	// Convert []*Permission to []Permission
-	perms := make([]role.Permission, len(permissions))
-	for i, p := range permissions {
-		perms[i] = *p
-	}
-
 	newRole := &role.RoleV2{
-		UUID:        uuid.New(), // Generate UUID explicitly
+		UUID:        uuid.New(),
 		Name:        input.Name,
 		Description: input.Description,
 		Type:        role.RoleTypeCustom,
 		TenantID:    input.TenantID,
-		Permissions: perms,
+		Permissions: permissions,
 	}
 
-	if err := s.roleRepo.Create(newRole); err != nil {
+	// Create within transaction
+	if err := tx.Create(newRole).Error; err != nil {
 		tx.Rollback()
 		return nil, fmt.Errorf("failed to create role: %w", err)
 	}
 
 	// Generate replication tuples
-	// Convert []Permission to []*Permission for ReplicationTuples
-	permPtrs := make([]*role.Permission, len(perms))
-	for i := range perms {
-		permPtrs[i] = &perms[i]
-	}
-	tuplesToAdd, tuplesToRemove, err := newRole.ReplicationTuples(nil, permPtrs)
+	tuplesToAdd, tuplesToRemove, err := newRole.ReplicationTuples(nil, permissions)
 	if err != nil {
 		tx.Rollback()
 		return nil, fmt.Errorf("failed to generate replication tuples: %w", err)
 	}
 
-	// Commit transaction
-	if err := tx.Commit().Error; err != nil {
-		return nil, fmt.Errorf("failed to commit transaction: %w", err)
-	}
-
-	// Replicate to Kessel
+	// Replicate BEFORE commit (Kessel validates permissions)
 	if err := s.replicator.Replicate(ctx, &kessel.ReplicationEvent{
 		EventType: "create_custom_role",
 		Info: map[string]interface{}{
@@ -131,8 +125,15 @@ func (s *RoleV2Service) Create(ctx context.Context, input CreateRoleInput) (*rol
 		Add:    tuplesToAdd,
 		Remove: tuplesToRemove,
 	}); err != nil {
-		// Log error but don't fail the request (eventual consistency)
-		fmt.Printf("[RoleV2Service] Warning: failed to replicate role creation: %v\n", err)
+		tx.Rollback()
+		return nil, fmt.Errorf("replication failed: %w", err)
+	}
+
+	// Commit transaction
+	if err := tx.Commit().Error; err != nil {
+		// Kessel has orphaned tuples, but this is rare
+		fmt.Printf("[RoleV2Service] ERROR: DB commit failed after replication: %v\n", err)
+		return nil, fmt.Errorf("failed to commit transaction: %w", err)
 	}
 
 	return newRole, nil
@@ -160,10 +161,22 @@ func (s *RoleV2Service) Update(ctx context.Context, input UpdateRoleInput) (*rol
 		return nil, fmt.Errorf("permissions are required")
 	}
 
-	// Resolve new permissions
-	newPermissions, err := s.permissionRepo.ResolveFromV2Data(input.Permissions)
-	if err != nil {
-		return nil, fmt.Errorf("failed to resolve permissions: %w", err)
+	// Parse permissions from input
+	newPermissions := make([]role.PermissionValue, 0, len(input.Permissions))
+	for _, permData := range input.Permissions {
+		app, appOk := permData["application"]
+		resType, resOk := permData["resource_type"]
+		verb, verbOk := permData["permission"]
+
+		if !appOk || !resOk || !verbOk {
+			return nil, fmt.Errorf("invalid permission format: missing application, resource_type, or permission")
+		}
+
+		newPermissions = append(newPermissions, role.PermissionValue{
+			Application:  app,
+			ResourceType: resType,
+			Verb:         verb,
+		})
 	}
 
 	// Start transaction
@@ -178,8 +191,8 @@ func (s *RoleV2Service) Update(ctx context.Context, input UpdateRoleInput) (*rol
 	}()
 
 	// Fetch existing role with permissions
-	existingRole, err := s.roleRepo.FindByUUID(input.UUID)
-	if err != nil {
+	var existingRole role.RoleV2
+	if err := tx.First(&existingRole, "uuid = ?", input.UUID).Error; err != nil {
 		tx.Rollback()
 		return nil, fmt.Errorf("role not found: %w", err)
 	}
@@ -197,45 +210,25 @@ func (s *RoleV2Service) Update(ctx context.Context, input UpdateRoleInput) (*rol
 	}
 
 	// Capture old permissions for replication
-	oldPermPtrs := make([]*role.Permission, len(existingRole.Permissions))
-	for i := range existingRole.Permissions {
-		oldPermPtrs[i] = &existingRole.Permissions[i]
-	}
-
-	// Convert new permissions
-	newPerms := make([]role.Permission, len(newPermissions))
-	for i, p := range newPermissions {
-		newPerms[i] = *p
-	}
+	oldPermissions := existingRole.Permissions
 
 	// Update role
 	existingRole.Update(input.Name, input.Description)
-	existingRole.Permissions = newPerms
+	existingRole.Permissions = newPermissions
 
-	// Convert for replication
-	newPermPtrs := make([]*role.Permission, len(newPerms))
-	for i := range newPerms {
-		newPermPtrs[i] = &newPerms[i]
-	}
-
-	if err := s.roleRepo.Update(existingRole); err != nil {
+	if err := tx.Save(&existingRole).Error; err != nil {
 		tx.Rollback()
 		return nil, fmt.Errorf("failed to update role: %w", err)
 	}
 
 	// Generate replication tuples
-	tuplesToAdd, tuplesToRemove, err := existingRole.ReplicationTuples(oldPermPtrs, newPermPtrs)
+	tuplesToAdd, tuplesToRemove, err := existingRole.ReplicationTuples(oldPermissions, newPermissions)
 	if err != nil {
 		tx.Rollback()
 		return nil, fmt.Errorf("failed to generate replication tuples: %w", err)
 	}
 
-	// Commit transaction
-	if err := tx.Commit().Error; err != nil {
-		return nil, fmt.Errorf("failed to commit transaction: %w", err)
-	}
-
-	// Replicate to Kessel
+	// Replicate BEFORE commit (Kessel validates permissions)
 	if err := s.replicator.Replicate(ctx, &kessel.ReplicationEvent{
 		EventType: "update_custom_role",
 		Info: map[string]interface{}{
@@ -245,10 +238,18 @@ func (s *RoleV2Service) Update(ctx context.Context, input UpdateRoleInput) (*rol
 		Add:    tuplesToAdd,
 		Remove: tuplesToRemove,
 	}); err != nil {
-		fmt.Printf("[RoleV2Service] Warning: failed to replicate role update: %v\n", err)
+		tx.Rollback()
+		return nil, fmt.Errorf("replication failed: %w", err)
 	}
 
-	return existingRole, nil
+	// Commit transaction
+	if err := tx.Commit().Error; err != nil {
+		// Kessel has orphaned tuples, but this is rare
+		fmt.Printf("[RoleV2Service] ERROR: DB commit failed after replication: %v\n", err)
+		return nil, fmt.Errorf("failed to commit transaction: %w", err)
+	}
+
+	return &existingRole, nil
 }
 
 // Delete deletes a custom role by UUID
@@ -265,8 +266,8 @@ func (s *RoleV2Service) Delete(ctx context.Context, roleUUID uuid.UUID, tenantID
 	}()
 
 	// Fetch role with permissions
-	existingRole, err := s.roleRepo.FindByUUID(roleUUID)
-	if err != nil {
+	var existingRole role.RoleV2
+	if err := tx.First(&existingRole, "uuid = ?", roleUUID).Error; err != nil {
 		tx.Rollback()
 		return fmt.Errorf("role not found: %w", err)
 	}
@@ -284,8 +285,8 @@ func (s *RoleV2Service) Delete(ctx context.Context, roleUUID uuid.UUID, tenantID
 	}
 
 	// Find all role bindings for this role
-	bindings, err := s.bindingRepo.FindByRole(existingRole.ID)
-	if err != nil {
+	var bindings []rolebinding.RoleBinding
+	if err := tx.Where("role_id = ?", existingRole.ID).Find(&bindings).Error; err != nil {
 		tx.Rollback()
 		return fmt.Errorf("failed to find role bindings: %w", err)
 	}
@@ -303,36 +304,37 @@ func (s *RoleV2Service) Delete(ctx context.Context, roleUUID uuid.UUID, tenantID
 	}
 
 	// Delete all role bindings
-	for _, binding := range bindings {
-		if err := s.bindingRepo.Delete(binding.UUID); err != nil {
+	for i := range bindings {
+		binding := &bindings[i]
+		// Clear associations before deleting (many-to-many join tables)
+		if err := tx.Model(binding).Association("Groups").Clear(); err != nil {
+			tx.Rollback()
+			return fmt.Errorf("failed to clear binding groups: %w", err)
+		}
+		if err := tx.Model(binding).Association("Principals").Clear(); err != nil {
+			tx.Rollback()
+			return fmt.Errorf("failed to clear binding principals: %w", err)
+		}
+		if err := tx.Delete(binding).Error; err != nil {
 			tx.Rollback()
 			return fmt.Errorf("failed to delete role binding: %w", err)
 		}
 	}
 
 	// Generate replication tuples for role permissions (all permissions removed)
-	oldPermPtrs := make([]*role.Permission, len(existingRole.Permissions))
-	for i := range existingRole.Permissions {
-		oldPermPtrs[i] = &existingRole.Permissions[i]
-	}
-	_, roleTuplesToRemove, err := existingRole.ReplicationTuples(oldPermPtrs, nil)
+	_, roleTuplesToRemove, err := existingRole.ReplicationTuples(existingRole.Permissions, nil)
 	if err != nil {
 		tx.Rollback()
 		return fmt.Errorf("failed to generate replication tuples: %w", err)
 	}
 
 	// Delete role
-	if err := s.roleRepo.Delete(roleUUID); err != nil {
+	if err := tx.Delete(&existingRole).Error; err != nil {
 		tx.Rollback()
 		return fmt.Errorf("failed to delete role: %w", err)
 	}
 
-	// Commit transaction
-	if err := tx.Commit().Error; err != nil {
-		return fmt.Errorf("failed to commit transaction: %w", err)
-	}
-
-	// Replicate to Kessel - combine binding and role tuples
+	// Replicate BEFORE commit - combine binding and role tuples
 	allTuplesToRemove := append(bindingTuplesToRemove, roleTuplesToRemove...)
 	if err := s.replicator.Replicate(ctx, &kessel.ReplicationEvent{
 		EventType: "delete_custom_role",
@@ -344,7 +346,15 @@ func (s *RoleV2Service) Delete(ctx context.Context, roleUUID uuid.UUID, tenantID
 		Add:    nil,
 		Remove: allTuplesToRemove,
 	}); err != nil {
-		fmt.Printf("[RoleV2Service] Warning: failed to replicate role deletion: %v\n", err)
+		tx.Rollback()
+		return fmt.Errorf("replication failed: %w", err)
+	}
+
+	// Commit transaction
+	if err := tx.Commit().Error; err != nil {
+		// Kessel has orphaned deletes, but this is rare
+		fmt.Printf("[RoleV2Service] ERROR: DB commit failed after replication: %v\n", err)
+		return fmt.Errorf("failed to commit transaction: %w", err)
 	}
 
 	return nil
@@ -377,8 +387,8 @@ func (s *RoleV2Service) BatchDelete(ctx context.Context, roleUUIDs []uuid.UUID, 
 	// Validate and process each role
 	for _, roleUUID := range roleUUIDs {
 		// Fetch role with permissions
-		existingRole, err := s.roleRepo.FindByUUID(roleUUID)
-		if err != nil {
+		var existingRole role.RoleV2
+		if err := tx.First(&existingRole, "uuid = ?", roleUUID).Error; err != nil {
 			notFoundIDs = append(notFoundIDs, roleUUID)
 			continue
 		}
@@ -396,8 +406,8 @@ func (s *RoleV2Service) BatchDelete(ctx context.Context, roleUUIDs []uuid.UUID, 
 		}
 
 		// Find all role bindings for this role
-		bindings, err := s.bindingRepo.FindByRole(existingRole.ID)
-		if err != nil {
+		var bindings []rolebinding.RoleBinding
+		if err := tx.Where("role_id = ?", existingRole.ID).Find(&bindings).Error; err != nil {
 			tx.Rollback()
 			return fmt.Errorf("failed to find role bindings for role %s: %w", roleUUID, err)
 		}
@@ -413,19 +423,25 @@ func (s *RoleV2Service) BatchDelete(ctx context.Context, roleUUIDs []uuid.UUID, 
 		}
 
 		// Delete all role bindings
-		for _, binding := range bindings {
-			if err := s.bindingRepo.Delete(binding.UUID); err != nil {
+		for i := range bindings {
+			binding := &bindings[i]
+			// Clear associations before deleting (many-to-many join tables)
+			if err := tx.Model(binding).Association("Groups").Clear(); err != nil {
+				tx.Rollback()
+				return fmt.Errorf("failed to clear binding groups: %w", err)
+			}
+			if err := tx.Model(binding).Association("Principals").Clear(); err != nil {
+				tx.Rollback()
+				return fmt.Errorf("failed to clear binding principals: %w", err)
+			}
+			if err := tx.Delete(binding).Error; err != nil {
 				tx.Rollback()
 				return fmt.Errorf("failed to delete role binding: %w", err)
 			}
 		}
 
 		// Generate replication tuples for role (all permissions removed)
-		oldPermPtrs := make([]*role.Permission, len(existingRole.Permissions))
-		for i := range existingRole.Permissions {
-			oldPermPtrs[i] = &existingRole.Permissions[i]
-		}
-		_, tuplesToRemove, err := existingRole.ReplicationTuples(oldPermPtrs, nil)
+		_, tuplesToRemove, err := existingRole.ReplicationTuples(existingRole.Permissions, nil)
 		if err != nil {
 			tx.Rollback()
 			return fmt.Errorf("failed to generate replication tuples: %w", err)
@@ -434,7 +450,7 @@ func (s *RoleV2Service) BatchDelete(ctx context.Context, roleUUIDs []uuid.UUID, 
 		allTuplesToRemove = append(allTuplesToRemove, tuplesToRemove...)
 
 		// Delete role
-		if err := s.roleRepo.Delete(roleUUID); err != nil {
+		if err := tx.Delete(&existingRole).Error; err != nil {
 			tx.Rollback()
 			return fmt.Errorf("failed to delete role %s: %w", roleUUID, err)
 		}
@@ -450,12 +466,7 @@ func (s *RoleV2Service) BatchDelete(ctx context.Context, roleUUIDs []uuid.UUID, 
 		return fmt.Errorf("cannot delete non-custom roles: %v", nonCustomRoleIDs)
 	}
 
-	// Commit transaction
-	if err := tx.Commit().Error; err != nil {
-		return fmt.Errorf("failed to commit transaction: %w", err)
-	}
-
-	// Replicate to Kessel
+	// Replicate BEFORE commit
 	if len(allTuplesToRemove) > 0 {
 		if err := s.replicator.Replicate(ctx, &kessel.ReplicationEvent{
 			EventType: "batch_delete_custom_roles",
@@ -466,8 +477,16 @@ func (s *RoleV2Service) BatchDelete(ctx context.Context, roleUUIDs []uuid.UUID, 
 			Add:    nil,
 			Remove: allTuplesToRemove,
 		}); err != nil {
-			fmt.Printf("[RoleV2Service] Warning: failed to replicate batch role deletion: %v\n", err)
+			tx.Rollback()
+			return fmt.Errorf("replication failed: %w", err)
 		}
+	}
+
+	// Commit transaction
+	if err := tx.Commit().Error; err != nil {
+		// Kessel has orphaned deletes, but this is rare
+		fmt.Printf("[RoleV2Service] ERROR: DB commit failed after replication: %v\n", err)
+		return fmt.Errorf("failed to commit transaction: %w", err)
 	}
 
 	return nil

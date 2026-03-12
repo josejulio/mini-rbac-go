@@ -13,7 +13,7 @@ import (
 
 	kratoslog "github.com/go-kratos/kratos/v2/log"
 
-	"github.com/redhat/mini-rbac-go/internal/api/management"
+	"github.com/redhat/mini-rbac-go/internal/api/middleware"
 	"github.com/redhat/mini-rbac-go/internal/api/v2"
 	"github.com/redhat/mini-rbac-go/internal/application/service"
 	"github.com/redhat/mini-rbac-go/internal/infrastructure"
@@ -79,7 +79,6 @@ func main() {
 
 	// Initialize repositories
 	roleRepo := database.NewRoleRepository(db.DB)
-	permRepo := database.NewPermissionRepository(db.DB)
 	tenantRepo := database.NewTenantRepository(db.DB)
 	groupRepo := database.NewGroupRepository(db.DB)
 	principalRepo := database.NewPrincipalRepository(db.DB)
@@ -88,7 +87,7 @@ func main() {
 
 	// Initialize services
 	fmt.Println("[4/5] Initializing application services...")
-	roleService := service.NewRoleV2Service(roleRepo, permRepo, bindingRepo, replicator, db.DB)
+	roleService := service.NewRoleV2Service(roleRepo, bindingRepo, replicator, db.DB)
 	groupService := service.NewGroupService(groupRepo, principalRepo, replicator, db.DB)
 	bindingService := service.NewRoleBindingService(bindingRepo, roleRepo, groupRepo, replicator, db.DB)
 	workspaceService := service.NewWorkspaceService(workspaceRepo, replicator, db.DB)
@@ -100,9 +99,6 @@ func main() {
 	workspaceHandler := v2.NewWorkspaceHandler(workspaceService, logger)
 	statusHandler := v2.NewStatusHandler(cfg, commit)
 
-	// Initialize internal handlers
-	permissionHandler := management.NewPermissionHandler(permRepo, logger)
-
 	// Setup router
 	fmt.Println("[5/5] Setting up HTTP routes...")
 	mux := http.NewServeMux()
@@ -111,42 +107,15 @@ func main() {
 	router := v2.NewRouter(roleHandler, groupHandler, bindingHandler, workspaceHandler, statusHandler, logger)
 	router.RegisterRoutes(mux)
 
-	// Wrap with logging middleware
-	loggingMiddleware := v2.NewLoggingMiddleware(logger)
-	handler := loggingMiddleware(mux)
+	// Wrap with middleware chain
+	// 1. Workspace bootstrap (ensures root/default workspaces exist)
+	workspaceBootstrap := middleware.NewWorkspaceBootstrapMiddleware(workspaceService)
+	var handler http.Handler = mux
+	handler = workspaceBootstrap.Handler(handler)
 
-	// Internal management API routes
-	mux.HandleFunc("/internal/permissions", func(w http.ResponseWriter, r *http.Request) {
-		switch r.Method {
-		case http.MethodGet:
-			permissionHandler.ListPermissions(w, r)
-		case http.MethodPost:
-			permissionHandler.CreatePermission(w, r)
-		default:
-			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		}
-	})
-	mux.HandleFunc("/internal/permissions/bulk", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodPost {
-			permissionHandler.BulkCreatePermissions(w, r)
-		} else {
-			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		}
-	})
-	mux.HandleFunc("/internal/openapi.json", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		data, err := os.ReadFile("internal-api/openapi.json")
-		if err != nil {
-			http.Error(w, "OpenAPI spec not found", http.StatusNotFound)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		w.Write(data)
-	})
+	// 2. Logging middleware (outermost - logs all requests)
+	loggingMiddleware := v2.NewLoggingMiddleware(logger)
+	handler = loggingMiddleware(handler)
 
 	// Setup HTTP server
 	server := &http.Server{
@@ -168,10 +137,7 @@ func main() {
 		fmt.Printf("  🔗 Groups API: http://%s/api/rbac/v2/groups\n", cfg.Server.HTTP.Addr)
 		fmt.Printf("  🔗 Role Bindings API: http://%s/api/rbac/v2/role-bindings\n", cfg.Server.HTTP.Addr)
 		fmt.Printf("  🔗 Workspaces API: http://%s/api/rbac/v2/workspaces\n", cfg.Server.HTTP.Addr)
-		fmt.Printf("  📖 OpenAPI Spec: http://%s/api/rbac/v2/openapi.json\n", cfg.Server.HTTP.Addr)
-		fmt.Printf("\nInternal Management API:\n")
-		fmt.Printf("  🔧 Permissions: http://%s/internal/permissions\n", cfg.Server.HTTP.Addr)
-		fmt.Printf("  📖 OpenAPI Spec: http://%s/internal/openapi.json\n\n", cfg.Server.HTTP.Addr)
+		fmt.Printf("  📖 OpenAPI Spec: http://%s/api/rbac/v2/openapi.json\n\n", cfg.Server.HTTP.Addr)
 
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("Failed to start server: %v", err)

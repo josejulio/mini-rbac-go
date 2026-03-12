@@ -21,7 +21,7 @@ const (
 // Mirrors the Python Workspace model
 type Workspace struct {
 	ID          uuid.UUID      `gorm:"type:uuid;primaryKey"`
-	Name        string         `gorm:"size:255;not null;index"`
+	Name        string         `gorm:"size:255;not null"`
 	Description *string        `gorm:"size:255"`
 	Type        WorkspaceType  `gorm:"size:20;not null;index"`
 	ParentID    *uuid.UUID     `gorm:"type:uuid;index"`

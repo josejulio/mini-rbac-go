@@ -56,16 +56,9 @@ func (h *WorkspaceHandler) CreateWorkspace(w http.ResponseWriter, r *http.Reques
 		parentID = &pid
 	}
 
-	// Default to standard type if not specified
-	wsType := workspace.WorkspaceTypeStandard
-	if req.Type != "" {
-		wsType = workspace.WorkspaceType(req.Type)
-	}
-
 	ws, err := h.workspaceService.Create(r.Context(), service.CreateWorkspaceInput{
 		Name:        req.Name,
 		Description: StringPtr(req.Description),
-		Type:        wsType,
 		ParentID:    parentID,
 		TenantID:    tenantID,
 	})
@@ -75,7 +68,7 @@ func (h *WorkspaceHandler) CreateWorkspace(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	h.logger.Infof("Created workspace: id=%s, name=%s, type=%s", ws.ID, ws.Name, ws.Type)
+	h.logger.Infof("Created workspace: id=%s, name=%s, parent=%v", ws.ID, ws.Name, ws.ParentID)
 	h.writeJSON(w, http.StatusCreated, h.toWorkspaceResponse(ws))
 }
 

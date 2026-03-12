@@ -195,15 +195,20 @@ func (h *GroupHandler) AddPrincipals(w http.ResponseWriter, r *http.Request) {
 
 	h.logger.Infof("Added %d principals to group: id=%s", len(req.Principals), groupID)
 
-	// Fetch and return the updated group
-	g, err := h.groupService.Get(r.Context(), groupID, tenantID)
-	if err != nil {
-		h.logger.Errorf("Failed to get updated group: %v", err)
-		h.writeError(w, http.StatusInternalServerError, "Failed to get updated group", err.Error())
-		return
+	// Return the added principals
+	principals := make([]PrincipalResponse, len(req.Principals))
+	for i, userID := range req.Principals {
+		principals[i] = PrincipalResponse{
+			UserID: userID,
+		}
 	}
 
-	h.writeJSON(w, http.StatusOK, h.toGroupResponse(g))
+	response := PrincipalListResponse{
+		Meta: PaginationMeta{Count: len(principals)},
+		Data: principals,
+	}
+
+	h.writeJSON(w, http.StatusOK, response)
 }
 
 // RemovePrincipals handles DELETE /api/rbac/v2/groups/{id}/principals
@@ -234,15 +239,22 @@ func (h *GroupHandler) RemovePrincipals(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Fetch and return the updated group
-	g, err := h.groupService.Get(r.Context(), groupID, tenantID)
-	if err != nil {
-		h.logger.Errorf("Failed to get updated group: %v", err)
-		h.writeError(w, http.StatusInternalServerError, "Failed to get updated group", err.Error())
-		return
+	h.logger.Infof("Removed %d principals from group: id=%s", len(req.Principals), groupID)
+
+	// Return the removed principals
+	principals := make([]PrincipalResponse, len(req.Principals))
+	for i, userID := range req.Principals {
+		principals[i] = PrincipalResponse{
+			UserID: userID,
+		}
 	}
 
-	h.writeJSON(w, http.StatusOK, h.toGroupResponse(g))
+	response := PrincipalListResponse{
+		Meta: PaginationMeta{Count: len(principals)},
+		Data: principals,
+	}
+
+	h.writeJSON(w, http.StatusOK, response)
 }
 
 // ListPrincipals handles GET /api/rbac/v2/groups/{id}/principals

@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"
@@ -33,22 +34,26 @@ func NewWorkspaceService(
 }
 
 // CreateWorkspaceInput contains data for creating a workspace
+// Only standard workspaces can be created via API (root/default are auto-created)
 type CreateWorkspaceInput struct {
 	Name        string
 	Description *string
-	Type        workspace.WorkspaceType
-	ParentID    *uuid.UUID
+	ParentID    *uuid.UUID // Optional - defaults to default workspace if not provided
 	TenantID    uuid.UUID
 }
 
 // Create creates a new workspace
+// All workspaces created via API are standard type
+// If no parent is provided, defaults to the default workspace
 func (s *WorkspaceService) Create(ctx context.Context, input CreateWorkspaceInput) (*workspace.Workspace, error) {
 	if input.Name == "" {
 		return nil, fmt.Errorf("name is required")
 	}
 
-	// Validate parent exists if provided
+	// Determine parent workspace
+	var parentID uuid.UUID
 	if input.ParentID != nil {
+		// Validate provided parent exists
 		parent, err := s.workspaceRepo.FindByID(*input.ParentID)
 		if err != nil {
 			return nil, fmt.Errorf("parent workspace not found: %w", err)
@@ -59,18 +64,22 @@ func (s *WorkspaceService) Create(ctx context.Context, input CreateWorkspaceInpu
 			return nil, fmt.Errorf("parent workspace must be in the same tenant")
 		}
 
-		// Validate parent type constraints
-		if input.Type == workspace.WorkspaceTypeDefault && parent.Type != workspace.WorkspaceTypeRoot {
-			return nil, fmt.Errorf("default workspace must have root workspace as parent")
+		parentID = *input.ParentID
+	} else {
+		// Default to default workspace as parent
+		defaultWs, err := s.workspaceRepo.FindDefault(input.TenantID)
+		if err != nil {
+			return nil, fmt.Errorf("default workspace not found (has tenant been bootstrapped?): %w", err)
 		}
+		parentID = defaultWs.ID
 	}
 
 	newWorkspace := &workspace.Workspace{
 		ID:          uuid.New(),
 		Name:        input.Name,
 		Description: input.Description,
-		Type:        input.Type,
-		ParentID:    input.ParentID,
+		Type:        workspace.WorkspaceTypeStandard,
+		ParentID:    &parentID,
 		TenantID:    input.TenantID,
 	}
 
@@ -83,25 +92,25 @@ func (s *WorkspaceService) Create(ctx context.Context, input CreateWorkspaceInpu
 	}
 
 	// Replicate to Kessel - create parent relationship
-	if newWorkspace.ParentID != nil {
-		parentTuple, err := createWorkspaceParentRelation(newWorkspace.ID, *newWorkspace.ParentID)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create parent relation tuple: %w", err)
-		}
+	// (ParentID is always set for standard workspaces)
+	parentTuple, err := createWorkspaceParentRelation(newWorkspace.ID, *newWorkspace.ParentID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create parent relation tuple: %w", err)
+	}
 
-		event := &kessel.ReplicationEvent{
-			EventType: "workspace.created",
-			Info: map[string]interface{}{
-				"workspace_id": newWorkspace.ID.String(),
-				"tenant_id":    newWorkspace.TenantID.String(),
-			},
-			Add:    []*common.RelationTuple{parentTuple},
-			Remove: []*common.RelationTuple{},
-		}
+	event := &kessel.ReplicationEvent{
+		EventType: "workspace.created",
+		Info: map[string]interface{}{
+			"workspace_id": newWorkspace.ID.String(),
+			"parent_id":    newWorkspace.ParentID.String(),
+			"tenant_id":    newWorkspace.TenantID.String(),
+		},
+		Add:    []*common.RelationTuple{parentTuple},
+		Remove: []*common.RelationTuple{},
+	}
 
-		if err := s.replicator.Replicate(ctx, event); err != nil {
-			return nil, fmt.Errorf("failed to replicate workspace creation: %w", err)
-		}
+	if err := s.replicator.Replicate(ctx, event); err != nil {
+		return nil, fmt.Errorf("failed to replicate workspace creation: %w", err)
 	}
 
 	return newWorkspace, nil
@@ -385,6 +394,125 @@ func (s *WorkspaceService) Move(ctx context.Context, workspaceID, newParentID, t
 	return ws, nil
 }
 
+// EnsureBuiltInWorkspaces ensures root and default workspaces exist for a tenant
+// Creates them if they don't exist. Thread-safe via database constraints.
+func (s *WorkspaceService) EnsureBuiltInWorkspaces(ctx context.Context, tenantID uuid.UUID) error {
+	// Check if root workspace exists
+	root, err := s.workspaceRepo.FindRoot(tenantID)
+	if err == nil && root != nil {
+		// Root exists, check default
+		_, err := s.workspaceRepo.FindDefault(tenantID)
+		if err == nil {
+			// Both exist, nothing to do
+			return nil
+		}
+	}
+
+	// Start transaction
+	tx := s.db.Begin()
+	if tx.Error != nil {
+		return fmt.Errorf("failed to start transaction: %w", tx.Error)
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			tx.Rollback()
+		}
+	}()
+
+	var rootWorkspace *workspace.Workspace
+	var defaultWorkspace *workspace.Workspace
+	var tuplesToAdd []*common.RelationTuple
+
+	// Create root workspace if it doesn't exist
+	if root == nil {
+		rootWorkspace = &workspace.Workspace{
+			ID:          uuid.New(),
+			Name:        "Root Workspace",
+			Description: nil,
+			Type:        workspace.WorkspaceTypeRoot,
+			ParentID:    nil,
+			TenantID:    tenantID,
+		}
+
+		if err := s.workspaceRepo.Create(rootWorkspace); err != nil {
+			tx.Rollback()
+			// If error is duplicate/constraint violation, it means another request created it concurrently
+			// This is fine, just return success (workspaces exist)
+			errMsg := err.Error()
+			if contains(errMsg, "duplicate") || contains(errMsg, "unique") || contains(errMsg, "constraint") {
+				return nil
+			}
+			return fmt.Errorf("failed to create root workspace: %w", err)
+		}
+	} else {
+		rootWorkspace = root
+	}
+
+	// Create default workspace if it doesn't exist
+	_, err = s.workspaceRepo.FindDefault(tenantID)
+	if err != nil {
+		defaultWorkspace = &workspace.Workspace{
+			ID:          uuid.New(),
+			Name:        "Default Workspace",
+			Description: nil,
+			Type:        workspace.WorkspaceTypeDefault,
+			ParentID:    &rootWorkspace.ID,
+			TenantID:    tenantID,
+		}
+
+		if err := s.workspaceRepo.Create(defaultWorkspace); err != nil {
+			tx.Rollback()
+			// If error is duplicate/constraint violation, concurrent creation happened - that's fine
+			errMsg := err.Error()
+			if contains(errMsg, "duplicate") || contains(errMsg, "unique") || contains(errMsg, "constraint") {
+				return nil
+			}
+			return fmt.Errorf("failed to create default workspace: %w", err)
+		}
+
+		// Create parent relation tuple for default workspace
+		parentTuple, err := createWorkspaceParentRelation(defaultWorkspace.ID, rootWorkspace.ID)
+		if err != nil {
+			tx.Rollback()
+			return fmt.Errorf("failed to create parent relation tuple: %w", err)
+		}
+		tuplesToAdd = append(tuplesToAdd, parentTuple)
+	}
+
+	// Replicate BEFORE commit
+	if len(tuplesToAdd) > 0 {
+		event := &kessel.ReplicationEvent{
+			EventType: "bootstrap_tenant_workspaces",
+			Info: map[string]interface{}{
+				"tenant_id":          tenantID.String(),
+				"root_workspace_id":  rootWorkspace.ID.String(),
+				"default_workspace_id": func() string {
+					if defaultWorkspace != nil {
+						return defaultWorkspace.ID.String()
+					}
+					return ""
+				}(),
+			},
+			Add:    tuplesToAdd,
+			Remove: []*common.RelationTuple{},
+		}
+
+		if err := s.replicator.Replicate(ctx, event); err != nil {
+			tx.Rollback()
+			return fmt.Errorf("replication failed: %w", err)
+		}
+	}
+
+	// Commit transaction
+	if err := tx.Commit().Error; err != nil {
+		// Kessel has orphaned tuples, but this is rare
+		fmt.Printf("[WorkspaceService] ERROR: DB commit failed after replication: %v\n", err)
+		return fmt.Errorf("failed to commit transaction: %w", err)
+	}
+
+	return nil
+}
+
 // Helper functions for replication
 
 // createWorkspaceParentRelation creates a parent relationship tuple for a workspace
@@ -415,4 +543,9 @@ func createWorkspaceParentRelation(childID, parentID uuid.UUID) (*common.Relatio
 	}
 
 	return tuple, nil
+}
+
+// contains checks if a string contains a substring (case-insensitive)
+func contains(s, substr string) bool {
+	return strings.Contains(strings.ToLower(s), strings.ToLower(substr))
 }

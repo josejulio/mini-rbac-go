@@ -44,35 +44,6 @@ echo "$HEALTH_RESPONSE" | jq '.'
 echo ""
 
 # ============================================================================
-# SEED PERMISSIONS (Internal API)
-# ============================================================================
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "🌱 SEEDING PERMISSIONS (Internal API)"
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo ""
-
-echo "🔧 Bulk Create Permissions"
-echo "   POST http://localhost:${RBAC_PORT}/internal/permissions/bulk"
-SEED_RESPONSE=$(safe_curl "Seed Permissions" -X POST http://localhost:${RBAC_PORT}/internal/permissions/bulk \
-  -H "Content-Type: application/json" \
-  -d '{
-    "permissions": [
-      {"application": "inventory", "resource_type": "hosts", "verb": "read"},
-      {"application": "inventory", "resource_type": "hosts", "verb": "write"},
-      {"application": "inventory", "resource_type": "hosts", "verb": "delete"},
-      {"application": "inventory", "resource_type": "groups", "verb": "read"},
-      {"application": "inventory", "resource_type": "groups", "verb": "write"},
-      {"application": "cost-management", "resource_type": "cost_models", "verb": "read"}
-    ]
-  }')
-
-echo "$SEED_RESPONSE" | jq '.'
-CREATED_COUNT=$(echo "$SEED_RESPONSE" | jq -r '.created | length')
-SKIPPED_COUNT=$(echo "$SEED_RESPONSE" | jq -r '.skipped | length')
-echo -e "   ${GREEN}✓${NC} Created: $CREATED_COUNT, Skipped: $SKIPPED_COUNT (already exist)"
-echo ""
-
-# ============================================================================
 # ROLES API
 # ============================================================================
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"

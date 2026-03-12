@@ -48,16 +48,30 @@ func New(cfg *infrastructure.DatabaseConfig) (*Database, error) {
 // AutoMigrate runs database migrations for all models
 func (d *Database) AutoMigrate() error {
 	// Order matters due to foreign key relationships
-	return d.DB.AutoMigrate(
+	if err := d.DB.AutoMigrate(
 		&tenant.Tenant{},
 		&tenant.TenantMapping{},
-		&role.Permission{},
 		&role.RoleV2{},
 		&group.Principal{},
 		&group.Group{},
 		&workspace.Workspace{},
 		&rolebinding.RoleBinding{},
-	)
+	); err != nil {
+		return err
+	}
+
+	// Create partial unique index for workspace types (GORM doesn't support complex WHERE clauses in tags)
+	// This ensures only one root and one default workspace per tenant
+	sql := `
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_workspace_tenant_builtin_type
+		ON workspaces (tenant_id, type)
+		WHERE type IN ('root', 'default')
+	`
+	if err := d.DB.Exec(sql).Error; err != nil {
+		return fmt.Errorf("failed to create workspace unique index: %w", err)
+	}
+
+	return nil
 }
 
 // Close closes the database connection

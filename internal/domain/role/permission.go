@@ -5,33 +5,7 @@ import (
 	"strings"
 )
 
-// Permission represents a permission in the system
-// Mirrors the Python Permission model
-type Permission struct {
-	ID           uint   `gorm:"primarykey"`
-	Application  string `gorm:"size:255;not null;index:idx_permission_unique,unique"`
-	ResourceType string `gorm:"size:255;not null;index:idx_permission_unique,unique"`
-	Verb         string `gorm:"size:255;not null;index:idx_permission_unique,unique"`
-}
-
-// TableName specifies the table name for GORM
-func (Permission) TableName() string {
-	return "permissions"
-}
-
-// String returns the v1 permission string format
-// Format: application:resource_type:verb
-func (p *Permission) String() string {
-	return fmt.Sprintf("%s:%s:%s", p.Application, p.ResourceType, p.Verb)
-}
-
-// V2String returns the v2 permission string format
-// Format: application_resource_type_verb
-func (p *Permission) V2String() string {
-	return fmt.Sprintf("%s_%s_%s", p.Application, p.ResourceType, p.Verb)
-}
-
-// PermissionValue represents a parsed permission value
+// PermissionValue represents a permission (no database storage)
 // Used for validation and conversion between v1 and v2 formats
 type PermissionValue struct {
 	Application  string
@@ -75,13 +49,4 @@ func (pv *PermissionValue) V1String() string {
 // V2String returns the v2 format
 func (pv *PermissionValue) V2String() string {
 	return fmt.Sprintf("%s_%s_%s", pv.Application, pv.ResourceType, pv.Verb)
-}
-
-// Repository defines the interface for permission persistence
-type PermissionRepository interface {
-	Create(permission *Permission) error
-	FindByV1String(v1String string) (*Permission, error)
-	FindByV2String(v2String string) (*Permission, error)
-	ResolveFromV2Data(v2Data []map[string]string) ([]*Permission, error)
-	List(offset, limit int) ([]*Permission, error)
 }

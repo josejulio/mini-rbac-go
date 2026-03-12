@@ -90,3 +90,16 @@ check_response() {
         exit 1
     fi
 }
+
+# Handle error from failed command
+handle_error() {
+    local step="$1"
+    local response="$2"
+
+    echo -e "${RED}❌ Test failed at step: $step${NC}" >&2
+    if [ -n "$response" ]; then
+        echo "Response:" >&2
+        (echo "$response" | jq '.' 2>/dev/null || echo "$response") >&2
+    fi
+    exit 1
+}
