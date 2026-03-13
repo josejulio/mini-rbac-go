@@ -72,14 +72,30 @@ func (h *WorkspaceHandler) CreateWorkspace(w http.ResponseWriter, r *http.Reques
 	h.writeJSON(w, http.StatusCreated, h.toWorkspaceResponse(ws))
 }
 
-// ListWorkspaces handles GET /api/rbac/v2/workspaces
+// ListWorkspaces handles GET /api/rbac/v2/workspaces?type=standard
 func (h *WorkspaceHandler) ListWorkspaces(w http.ResponseWriter, r *http.Request) {
 	tenantID := ExtractTenantID(r)
 
 	offset := 0
 	limit := 20
 
-	workspaces, err := h.workspaceService.List(r.Context(), tenantID, offset, limit)
+	// Parse optional type query parameter
+	var workspaceType *workspace.WorkspaceType
+	typeParam := r.URL.Query().Get("type")
+	if typeParam != "" {
+		// Validate type
+		wType := workspace.WorkspaceType(typeParam)
+		switch wType {
+		case workspace.WorkspaceTypeStandard, workspace.WorkspaceTypeDefault, workspace.WorkspaceTypeRoot:
+			workspaceType = &wType
+		default:
+			h.logger.Warnf("ListWorkspaces: invalid type parameter '%s'", typeParam)
+			h.writeError(w, http.StatusBadRequest, "Invalid type parameter", "type must be one of: standard, default, root")
+			return
+		}
+	}
+
+	workspaces, err := h.workspaceService.List(r.Context(), tenantID, workspaceType, offset, limit)
 	if err != nil {
 		h.logger.Errorf("Failed to list workspaces: %v", err)
 		h.writeError(w, http.StatusInternalServerError, "Failed to list workspaces", err.Error())

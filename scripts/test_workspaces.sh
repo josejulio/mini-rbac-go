@@ -95,8 +95,7 @@ PARENT_WS_RESPONSE=$(curl -sf -X POST "$API_BASE/workspaces" \
   -H "Content-Type: application/json" \
   -d '{
     "name": "Engineering",
-    "description": "Engineering department workspace",
-    "type": "standard"
+    "description": "Engineering department workspace"
   }' 2>&1) || handle_error "Create Parent Workspace" "$PARENT_WS_RESPONSE"
 
 check_response "$PARENT_WS_RESPONSE" "Create Parent Workspace"
@@ -115,7 +114,6 @@ CHILD_WS_RESPONSE=$(curl -sf -X POST "$API_BASE/workspaces" \
   -d "{
     \"name\": \"Backend Team\",
     \"description\": \"Backend engineering team\",
-    \"type\": \"standard\",
     \"parent_id\": \"$PARENT_WS_ID\"
   }" 2>&1) || handle_error "Create Child Workspace" "$CHILD_WS_RESPONSE"
 
@@ -135,7 +133,6 @@ GRANDCHILD_WS_RESPONSE=$(curl -sf -X POST "$API_BASE/workspaces" \
   -d "{
     \"name\": \"API Squad\",
     \"description\": \"API development squad\",
-    \"type\": \"standard\",
     \"parent_id\": \"$CHILD_WS_ID\"
   }" 2>&1) || handle_error "Create Grandchild Workspace" "$GRANDCHILD_WS_RESPONSE"
 
@@ -168,6 +165,22 @@ LIST_WS_RESPONSE=$(curl -sf "${CURL_HEADERS[@]}" "$API_BASE/workspaces" 2>&1) ||
 echo "$LIST_WS_RESPONSE" | jq '.'
 WS_COUNT=$(echo "$LIST_WS_RESPONSE" | jq -r '.meta.count')
 echo -e "   ${GREEN}✓${NC} Found $WS_COUNT workspaces"
+echo ""
+
+echo "6️⃣a  List Workspaces Filtered by Type (standard)"
+echo "   GET $API_BASE/workspaces?type=standard"
+LIST_STANDARD_RESPONSE=$(curl -sf "${CURL_HEADERS[@]}" "$API_BASE/workspaces?type=standard" 2>&1) || handle_error "List Standard Workspaces" "$LIST_STANDARD_RESPONSE"
+echo "$LIST_STANDARD_RESPONSE" | jq '.'
+STANDARD_COUNT=$(echo "$LIST_STANDARD_RESPONSE" | jq -r '.meta.count')
+echo -e "   ${GREEN}✓${NC} Found $STANDARD_COUNT standard workspaces"
+echo ""
+
+echo "6️⃣b  List Workspaces Filtered by Type (default)"
+echo "   GET $API_BASE/workspaces?type=default"
+LIST_DEFAULT_RESPONSE=$(curl -sf "${CURL_HEADERS[@]}" "$API_BASE/workspaces?type=default" 2>&1) || handle_error "List Default Workspaces" "$LIST_DEFAULT_RESPONSE"
+echo "$LIST_DEFAULT_RESPONSE" | jq '.'
+DEFAULT_COUNT=$(echo "$LIST_DEFAULT_RESPONSE" | jq -r '.meta.count')
+echo -e "   ${GREEN}✓${NC} Found $DEFAULT_COUNT default workspaces"
 echo ""
 
 # ============================================================================
@@ -264,12 +277,13 @@ echo ""
 
 echo -e "${GREEN}✅ Workspace API test complete!${NC}"
 echo ""
-echo -e "${GREEN}All 13 test cases passed!${NC}"
+echo -e "${GREEN}All 15 test cases passed!${NC}"
 echo ""
 echo "Test coverage:"
 echo "  ✓ Create workspaces (parent, child, grandchild)"
 echo "  ✓ Get workspace by ID"
 echo "  ✓ List all workspaces"
+echo "  ✓ List workspaces filtered by type (standard, default)"
 echo "  ✓ Get workspace with ancestry (using ?include_ancestry=true)"
 echo "  ✓ Update workspace"
 echo "  ✓ Delete workspaces (cascading from leaf to parent)"
@@ -290,3 +304,7 @@ echo "  - RBAC_PORT: Set to use a different port (default: 8080)"
 echo "  - TENANT_ID: Set to test multitenancy (optional, uses null UUID if not set)"
 echo ""
 echo "Example: TENANT_ID=550e8400-e29b-41d4-a716-446655440000 ./scripts/test_workspaces.sh"
+echo ""
+echo "API Features Tested:"
+echo "  - Workspace filtering: GET /api/rbac/v2/workspaces?type={standard|default|root}"
+echo "  - Ancestry inclusion: GET /api/rbac/v2/workspaces/{id}?include_ancestry=true"

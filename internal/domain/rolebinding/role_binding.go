@@ -42,8 +42,20 @@ func (rb *RoleBinding) BeforeCreate() error {
 }
 
 // ResourceTypePair returns the (namespace, name) pair for the resource type
-// Convention: resource_type "workspace" maps to ("rbac", "workspace")
+// If ResourceType contains a '/', it's split into namespace and name
+// Otherwise, defaults to "rbac" namespace
+// Examples:
+//   "workspace" -> ("rbac", "workspace")
+//   "rbac/workspace" -> ("rbac", "workspace")
+//   "custom/resource" -> ("custom", "resource")
 func (rb *RoleBinding) ResourceTypePair() (string, string) {
+	// Check if ResourceType contains a namespace separator
+	for i, ch := range rb.ResourceType {
+		if ch == '/' {
+			return rb.ResourceType[:i], rb.ResourceType[i+1:]
+		}
+	}
+	// No namespace specified, default to "rbac"
 	return "rbac", rb.ResourceType
 }
 

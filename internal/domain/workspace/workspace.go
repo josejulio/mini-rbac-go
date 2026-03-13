@@ -11,10 +11,9 @@ import (
 type WorkspaceType string
 
 const (
-	WorkspaceTypeStandard       WorkspaceType = "standard"
-	WorkspaceTypeDefault        WorkspaceType = "default"
-	WorkspaceTypeRoot           WorkspaceType = "root"
-	WorkspaceTypeUngroupedHosts WorkspaceType = "ungrouped-hosts"
+	WorkspaceTypeStandard WorkspaceType = "standard"
+	WorkspaceTypeDefault  WorkspaceType = "default"
+	WorkspaceTypeRoot     WorkspaceType = "root"
 )
 
 // Workspace represents a hierarchical workspace
@@ -81,7 +80,7 @@ type Repository interface {
 	FindByIDs(ids []uuid.UUID) ([]*Workspace, error)
 	FindRoot(tenantID uuid.UUID) (*Workspace, error)
 	FindDefault(tenantID uuid.UUID) (*Workspace, error)
-	ListForTenant(tenantID uuid.UUID, offset, limit int) ([]*Workspace, error)
+	ListForTenant(tenantID uuid.UUID, workspaceType *WorkspaceType, offset, limit int) ([]*Workspace, error)
 	GetAncestors(id uuid.UUID) ([]*Workspace, error)
 	GetDescendants(id uuid.UUID) ([]*Workspace, error)
 }

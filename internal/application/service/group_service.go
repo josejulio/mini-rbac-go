@@ -248,10 +248,14 @@ func (s *GroupService) AddPrincipals(ctx context.Context, input AddPrincipalsInp
 		tx.Rollback()
 		return fmt.Errorf("failed to add principals to group: %w", err)
 	}
-	g.Principals = append(g.Principals, newPrincipals...)
+
+	// Build new principals list for replication delta computation
+	// Note: Don't append to g.Principals directly as Association may have already updated it
+	allPrincipals := append([]*group.Principal{}, oldPrincipals...)
+	allPrincipals = append(allPrincipals, newPrincipals...)
 
 	// Generate replication tuples (only new principals)
-	tuplesToAdd, _, err := g.ReplicationTuples(oldPrincipals, g.Principals)
+	tuplesToAdd, _, err := g.ReplicationTuples(oldPrincipals, allPrincipals)
 	if err != nil {
 		tx.Rollback()
 		return fmt.Errorf("failed to generate replication tuples: %w", err)

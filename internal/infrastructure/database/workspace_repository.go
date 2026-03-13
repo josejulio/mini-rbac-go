@@ -93,11 +93,17 @@ func (r *WorkspaceRepository) FindDefault(tenantID uuid.UUID) (*workspace.Worksp
 	return &ws, nil
 }
 
-// ListForTenant lists workspaces for a tenant with pagination
-func (r *WorkspaceRepository) ListForTenant(tenantID uuid.UUID, offset, limit int) ([]*workspace.Workspace, error) {
+// ListForTenant lists workspaces for a tenant with pagination and optional type filter
+func (r *WorkspaceRepository) ListForTenant(tenantID uuid.UUID, workspaceType *workspace.WorkspaceType, offset, limit int) ([]*workspace.Workspace, error) {
 	var workspaces []*workspace.Workspace
-	err := r.db.Preload("Parent").
-		Where("tenant_id = ?", tenantID).
+	query := r.db.Preload("Parent").Where("tenant_id = ?", tenantID)
+
+	// Apply type filter if provided
+	if workspaceType != nil {
+		query = query.Where("type = ?", *workspaceType)
+	}
+
+	err := query.
 		Offset(offset).
 		Limit(limit).
 		Order("name ASC, modified DESC").

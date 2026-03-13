@@ -201,9 +201,9 @@ func (s *WorkspaceService) Delete(ctx context.Context, id uuid.UUID, tenantID uu
 	return nil
 }
 
-// List lists workspaces for a tenant
-func (s *WorkspaceService) List(ctx context.Context, tenantID uuid.UUID, offset, limit int) ([]*workspace.Workspace, error) {
-	return s.workspaceRepo.ListForTenant(tenantID, offset, limit)
+// List lists workspaces for a tenant with optional type filter
+func (s *WorkspaceService) List(ctx context.Context, tenantID uuid.UUID, workspaceType *workspace.WorkspaceType, offset, limit int) ([]*workspace.Workspace, error) {
+	return s.workspaceRepo.ListForTenant(tenantID, workspaceType, offset, limit)
 }
 
 // Get retrieves a single workspace by ID

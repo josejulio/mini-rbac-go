@@ -297,6 +297,94 @@ var _ = Describe("RoleBindingService", func() {
 				Expect(joinCount).To(Equal(int64(1)))
 			})
 		})
+
+		Context("when assigning role to group with principals", func() {
+			It("should not send duplicate tuples or group membership tuples", func() {
+				// Setup: Create a group with principals (simulating user's scenario)
+				groupWithPrincipals := &group.Group{
+					UUID:     uuid.New(),
+					Name:     "Group With Principals",
+					TenantID: testTenantID,
+				}
+				err := db.Create(groupWithPrincipals).Error
+				Expect(err).NotTo(HaveOccurred())
+
+				// Add principals to the group
+				principal1 := &group.Principal{UserID: "admin", Type: group.PrincipalTypeUser, TenantID: testTenantID}
+				principal2 := &group.Principal{UserID: "jdoe", Type: group.PrincipalTypeUser, TenantID: testTenantID}
+				err = db.Create(principal1).Error
+				Expect(err).NotTo(HaveOccurred())
+				err = db.Create(principal2).Error
+				Expect(err).NotTo(HaveOccurred())
+
+				err = db.Model(groupWithPrincipals).Association("Principals").Append([]*group.Principal{principal1, principal2})
+				Expect(err).NotTo(HaveOccurred())
+
+				// Reset the replicator to track calls
+				replicator.shouldFail = false
+				replicator.capturedEvents = nil
+
+				// Act: Assign role to group on workspace
+				workspaceID := uuid.New()
+				result, err := bindingService.UpdateForSubject(
+					ctx,
+					"rbac/workspace",
+					workspaceID.String(),
+					"group",
+					groupWithPrincipals.UUID.String(),
+					[]string{testRole.UUID.String()},
+					testTenantID,
+				)
+
+				// Assert
+				if err != nil {
+					GinkgoWriter.Printf("\n[TEST] Error occurred: %v\n", err)
+					Fail(fmt.Sprintf("UpdateForSubject failed: %v", err))
+				}
+				if result == nil {
+					Fail("UpdateForSubject returned nil result with no error")
+				}
+				Expect(result.Roles).To(HaveLen(1))
+
+				// Check replication events
+				Expect(replicator.capturedEvents).To(HaveLen(1))
+				event := replicator.capturedEvents[0]
+
+				// Print all tuples for debugging
+				GinkgoWriter.Printf("\n[TEST] Tuples sent to replicator:\n")
+				for i, t := range event.Add {
+					GinkgoWriter.Printf("  ADD[%d]: %s\n", i, t.Stringify())
+				}
+				for i, t := range event.Remove {
+					GinkgoWriter.Printf("  REMOVE[%d]: %s\n", i, t.Stringify())
+				}
+
+				// Verify no duplicates in Add tuples
+				addTupleStrings := make(map[string]int)
+				for _, t := range event.Add {
+					tupleStr := t.Stringify()
+					addTupleStrings[tupleStr]++
+				}
+
+				// Check for duplicates
+				for tupleStr, count := range addTupleStrings {
+					Expect(count).To(Equal(1), "Duplicate tuple found: "+tupleStr)
+				}
+
+				// Verify tuple types are correct (should be role binding tuples, not group membership tuples)
+				for _, t := range event.Add {
+					// Role binding tuples should have resource type "role_binding" or "workspace", not "group"
+					Expect(t.Resource.Type.Name).NotTo(Equal("group"),
+						"Found group membership tuple instead of role binding tuple: "+t.Stringify())
+
+					// Should be one of: role_binding, workspace
+					Expect(t.Resource.Type.Name).To(Or(
+						Equal("role_binding"),
+						Equal("workspace"),
+					), "Unexpected resource type in tuple: "+t.Stringify())
+				}
+			})
+		})
 	})
 
 	Describe("BatchCreate", func() {
