@@ -3,7 +3,7 @@ server:
     addr: 0.0.0.0:8085
     timeout: 1s
   grpc:
-    addr: 0.0.0.0:9090
+    addr: 0.0.0.0:9085
     timeout: 1s
 
 database:
