@@ -1,0 +1,32 @@
+# Git
+.git
+.gitignore
+.github
+
+# Documentation
+*.md
+docs/
+
+# Test files
+*_test.go
+**/*_test.go
+testdata/
+
+# Build artifacts
+mini-rbac-go
+*.exe
+*.dll
+*.so
+*.dylib
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+*~
+
+# Misc
+.DS_Store
+tmp/
+vendor/

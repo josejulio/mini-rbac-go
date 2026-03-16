@@ -1,4 +1,4 @@
-.PHONY: build run test clean migrate dev db-start db-stop db-logs db-shell db-status build-release
+.PHONY: build run test clean migrate dev db-start db-stop db-logs db-shell db-status build-release image-build image-push image-build-push
 
 # Version and build information
 VERSION ?= dev
@@ -10,6 +10,13 @@ LDFLAGS = -X main.version=$(VERSION) -X main.commit=$(COMMIT)
 
 # Container runtime detection (docker or podman)
 CONTAINER_BIN ?= $(shell command -v podman 2>/dev/null || command -v docker 2>/dev/null)
+
+# Container image configuration
+IMAGE_REGISTRY ?= quay.io
+IMAGE_NAMESPACE ?= $(USER)
+IMAGE_NAME ?= mini-rbac-go
+IMAGE_TAG ?= latest
+IMAGE_FULL = $(IMAGE_REGISTRY)/$(IMAGE_NAMESPACE)/$(IMAGE_NAME):$(IMAGE_TAG)
 
 # Database container configuration
 DB_CONTAINER_NAME ?= mini-rbac-postgres
@@ -68,6 +75,34 @@ tidy:
 	@echo "Tidying dependencies..."
 	@go mod tidy
 	@echo "✅ Tidy complete"
+
+# Build container image
+image-build:
+	@if [ -z "$(CONTAINER_BIN)" ]; then \
+		echo "❌ Error: Neither docker nor podman found in PATH"; \
+		exit 1; \
+	fi
+	@echo "🐳 Building container image..."
+	@echo "   Image: $(IMAGE_FULL)"
+	@$(CONTAINER_BIN) build -t $(IMAGE_FULL) .
+	@echo "✅ Image built successfully"
+	@echo ""
+	@echo "To run locally:"
+	@echo "  $(CONTAINER_BIN) run -p 8080:8080 -e DATABASE_HOST=host.docker.internal $(IMAGE_FULL)"
+
+# Push container image to registry
+image-push:
+	@if [ -z "$(CONTAINER_BIN)" ]; then \
+		echo "❌ Error: Neither docker nor podman found in PATH"; \
+		exit 1; \
+	fi
+	@echo "🚀 Pushing container image..."
+	@echo "   Image: $(IMAGE_FULL)"
+	@$(CONTAINER_BIN) push $(IMAGE_FULL)
+	@echo "✅ Image pushed successfully"
+
+# Build and push container image
+image-build-push: image-build image-push
 
 # Initialize database (requires PostgreSQL running)
 db-init:
@@ -187,6 +222,23 @@ help:
 	@echo "  make clean          - Clean build artifacts"
 	@echo "  make fmt            - Format code"
 	@echo "  make tidy           - Tidy dependencies"
+	@echo ""
+	@echo "Container Image:"
+	@echo "  make image-build       - Build container image"
+	@echo "  make image-push        - Push container image to registry"
+	@echo "  make image-build-push  - Build and push container image"
+	@echo ""
+	@echo "  Image configuration (override with env vars):"
+	@echo "    IMAGE_REGISTRY=$(IMAGE_REGISTRY)"
+	@echo "    IMAGE_NAMESPACE=$(IMAGE_NAMESPACE)"
+	@echo "    IMAGE_NAME=$(IMAGE_NAME)"
+	@echo "    IMAGE_TAG=$(IMAGE_TAG)"
+	@echo "    Current: $(IMAGE_FULL)"
+	@echo ""
+	@echo "  Examples:"
+	@echo "    make image-build"
+	@echo "    make image-build IMAGE_NAMESPACE=myuser IMAGE_TAG=v1.0.0"
+	@echo "    make image-build-push IMAGE_NAMESPACE=myteam IMAGE_TAG=dev"
 	@echo ""
 	@echo "Database (Container):"
 	@echo "  make db-start   - Start PostgreSQL container"

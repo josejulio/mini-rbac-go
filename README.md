@@ -65,11 +65,32 @@ internal/
 ```bash
 # Required
 go 1.25+
-Docker or Podman (for development database)
+Docker or Podman (for development database and container builds)
 
 # Optional (for full functionality)
 Kessel relations-api instance
 ```
+
+### Running with Container (Easiest)
+
+Pull and run the pre-built image from Quay.io:
+
+```bash
+# Pull the latest image
+docker pull quay.io/jmartine/mini-rbac-go:latest
+
+# Run the container (requires PostgreSQL)
+docker run -p 8080:8080 \
+  -e DATABASE_HOST=localhost \
+  -e DATABASE_NAME=rbac \
+  -e DATABASE_USER=postgres \
+  -e DATABASE_PASSWORD=postgres \
+  quay.io/jmartine/mini-rbac-go:latest
+
+# Server available at http://localhost:8080
+```
+
+For building your own container image, see [.github/CONTAINER_SETUP.md](.github/CONTAINER_SETUP.md).
 
 ### 1. Setup Database
 
@@ -665,7 +686,27 @@ make tidy
 make clean
 ```
 
+### Container Image
+
+```bash
+# Build container image (uses $USER as namespace by default)
+make image-build
+
+# Build with custom namespace/tag
+make image-build IMAGE_NAMESPACE=myuser IMAGE_TAG=v1.0.0
+
+# Push to registry
+make image-push IMAGE_NAMESPACE=myuser
+
+# Build and push in one command
+make image-build-push IMAGE_NAMESPACE=myuser IMAGE_TAG=dev
+
+# View all image commands
+make help
+```
+
 For detailed development instructions, see [DEVELOPMENT.md](DEVELOPMENT.md).
+For container publishing setup, see [.github/CONTAINER_SETUP.md](.github/CONTAINER_SETUP.md).
 
 ## 📖 Project Structure
 
