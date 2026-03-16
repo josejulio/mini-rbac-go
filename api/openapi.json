@@ -1329,18 +1329,13 @@
             "description": "Workspace description",
             "example": "Engineering department workspace"
           },
-          "type": {
-            "type": "string",
-            "enum": ["root", "default", "standard"],
-            "description": "Workspace type (default: standard)",
-            "default": "standard"
-          },
           "parent_id": {
             "type": "string",
             "format": "uuid",
-            "description": "Parent workspace UUID (optional)"
+            "description": "Parent workspace UUID (optional, defaults to default workspace)"
           }
-        }
+        },
+        "description": "All workspaces created via API are automatically assigned type 'standard'. Root and default workspaces are auto-created per tenant."
       },
       "UpdateWorkspaceRequest": {
         "type": "object",
