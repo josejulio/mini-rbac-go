@@ -1,4 +1,4 @@
-#!/usr/bin/env
+#!/usr/bin/env sh
 
 # This assumes the following services are running an accepting unauthenticated requests
 # - mini-rbac: running on localhost:8085 and configured to talk with relations-api
