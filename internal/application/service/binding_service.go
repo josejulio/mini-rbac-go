@@ -17,11 +17,12 @@ import (
 // RoleBindingService handles business logic for RoleBinding operations
 // Mirrors the Python RoleBindingService
 type RoleBindingService struct {
-	bindingRepo rolebinding.Repository
-	roleRepo    role.RoleRepository
-	groupRepo   group.Repository
-	replicator  Replicator
-	db          *gorm.DB
+	bindingRepo   rolebinding.Repository
+	roleRepo      role.RoleRepository
+	groupRepo     group.Repository
+	principalRepo group.PrincipalRepository
+	replicator    Replicator
+	db            *gorm.DB
 }
 
 // NewRoleBindingService creates a new RoleBindingService
@@ -29,15 +30,17 @@ func NewRoleBindingService(
 	bindingRepo rolebinding.Repository,
 	roleRepo role.RoleRepository,
 	groupRepo group.Repository,
+	principalRepo group.PrincipalRepository,
 	replicator Replicator,
 	db *gorm.DB,
 ) *RoleBindingService {
 	return &RoleBindingService{
-		bindingRepo: bindingRepo,
-		roleRepo:    roleRepo,
-		groupRepo:   groupRepo,
-		replicator:  replicator,
-		db:          db,
+		bindingRepo:   bindingRepo,
+		roleRepo:      roleRepo,
+		groupRepo:     groupRepo,
+		principalRepo: principalRepo,
+		replicator:    replicator,
+		db:            db,
 	}
 }
 
@@ -47,7 +50,7 @@ type AssignRoleInput struct {
 	ResourceType string
 	ResourceID   string
 	SubjectType  string // "group" or "user"
-	SubjectUUIDs []uuid.UUID
+	SubjectIDs   []string // For groups: UUID strings, For users: user_id strings
 	TenantID     uuid.UUID
 }
 
@@ -60,7 +63,7 @@ func (s *RoleBindingService) AssignRole(ctx context.Context, input AssignRoleInp
 	if input.ResourceID == "" {
 		return nil, fmt.Errorf("resource_id is required")
 	}
-	if len(input.SubjectUUIDs) == 0 {
+	if len(input.SubjectIDs) == 0 {
 		return nil, fmt.Errorf("at least one subject is required")
 	}
 
@@ -116,13 +119,26 @@ func (s *RoleBindingService) AssignRole(ctx context.Context, input AssignRoleInp
 
 	// Fetch subjects based on type
 	var groups []*group.Group
+	var principals []*group.Principal
+
 	if input.SubjectType == "group" {
+		// Parse UUIDs
+		var subjectUUIDs []uuid.UUID
+		for _, idStr := range input.SubjectIDs {
+			subjectUUID, err := uuid.Parse(idStr)
+			if err != nil {
+				tx.Rollback()
+				return nil, fmt.Errorf("invalid group UUID '%s': %w", idStr, err)
+			}
+			subjectUUIDs = append(subjectUUIDs, subjectUUID)
+		}
+
 		var fetchedGroups []group.Group
-		if err := tx.Where("uuid IN ?", input.SubjectUUIDs).Find(&fetchedGroups).Error; err != nil {
+		if err := tx.Where("uuid IN ?", subjectUUIDs).Find(&fetchedGroups).Error; err != nil {
 			tx.Rollback()
 			return nil, fmt.Errorf("failed to fetch groups: %w", err)
 		}
-		if len(fetchedGroups) != len(input.SubjectUUIDs) {
+		if len(fetchedGroups) != len(subjectUUIDs) {
 			tx.Rollback()
 			return nil, fmt.Errorf("some groups not found")
 		}
@@ -138,9 +154,40 @@ func (s *RoleBindingService) AssignRole(ctx context.Context, input AssignRoleInp
 			return nil, fmt.Errorf("failed to add groups to binding: %w", err)
 		}
 		roleBinding.Groups = append(roleBinding.Groups, groups...)
+	} else if input.SubjectType == "user" {
+		// Find or create principals for user IDs
+		for _, userID := range input.SubjectIDs {
+			var principal group.Principal
+			err := tx.Where("user_id = ? AND tenant_id = ?", userID, input.TenantID).First(&principal).Error
+
+			if err == gorm.ErrRecordNotFound {
+				// Create new principal
+				principal = group.Principal{
+					UserID:   userID,
+					Type:     group.PrincipalTypeUser,
+					TenantID: input.TenantID,
+				}
+				if err := tx.Create(&principal).Error; err != nil {
+					tx.Rollback()
+					return nil, fmt.Errorf("failed to create principal for user '%s': %w", userID, err)
+				}
+			} else if err != nil {
+				tx.Rollback()
+				return nil, fmt.Errorf("failed to fetch principal for user '%s': %w", userID, err)
+			}
+
+			principals = append(principals, &principal)
+		}
+
+		// Use Association to properly manage many-to-many relationship
+		if err := tx.Model(&roleBinding).Association("Principals").Append(principals); err != nil {
+			tx.Rollback()
+			return nil, fmt.Errorf("failed to add principals to binding: %w", err)
+		}
+		roleBinding.Principals = append(roleBinding.Principals, principals...)
 	} else {
 		tx.Rollback()
-		return nil, fmt.Errorf("unsupported subject type: %s (only 'group' is currently supported)", input.SubjectType)
+		return nil, fmt.Errorf("unsupported subject type: %s (only 'group' and 'user' are supported)", input.SubjectType)
 	}
 
 	// Generate replication tuples
@@ -159,6 +206,16 @@ func (s *RoleBindingService) AssignRole(ctx context.Context, input AssignRoleInp
 	// Add subject tuples for each group
 	for _, g := range groups {
 		subjectTuple, err := roleBinding.GroupSubjectTuple(g)
+		if err != nil {
+			tx.Rollback()
+			return nil, fmt.Errorf("failed to generate subject tuple: %w", err)
+		}
+		tuplesToAdd = append(tuplesToAdd, subjectTuple)
+	}
+
+	// Add subject tuples for each principal
+	for _, p := range principals {
+		subjectTuple, err := roleBinding.PrincipalSubjectTuple(p)
 		if err != nil {
 			tx.Rollback()
 			return nil, fmt.Errorf("failed to generate subject tuple: %w", err)
@@ -197,7 +254,7 @@ type UnassignRoleInput struct {
 	ResourceType string
 	ResourceID   string
 	SubjectType  string
-	SubjectUUIDs []uuid.UUID
+	SubjectIDs   []string // For groups: UUID strings, For users: user_id strings
 	TenantID     uuid.UUID
 }
 
@@ -233,10 +290,23 @@ func (s *RoleBindingService) UnassignRole(ctx context.Context, input UnassignRol
 
 	// Remove subjects based on type
 	var groupsToRemove []*group.Group
+	var principalsToRemove []*group.Principal
+
 	if input.SubjectType == "group" {
+		// Parse UUIDs
+		var subjectUUIDs []uuid.UUID
+		for _, idStr := range input.SubjectIDs {
+			subjectUUID, err := uuid.Parse(idStr)
+			if err != nil {
+				tx.Rollback()
+				return fmt.Errorf("invalid group UUID '%s': %w", idStr, err)
+			}
+			subjectUUIDs = append(subjectUUIDs, subjectUUID)
+		}
+
 		// Build set of UUIDs to remove
 		toRemove := make(map[uuid.UUID]bool)
-		for _, uuid := range input.SubjectUUIDs {
+		for _, uuid := range subjectUUIDs {
 			toRemove[uuid] = true
 		}
 
@@ -251,6 +321,24 @@ func (s *RoleBindingService) UnassignRole(ctx context.Context, input UnassignRol
 		}
 
 		roleBinding.Groups = remainingGroups
+	} else if input.SubjectType == "user" {
+		// Build set of user IDs to remove
+		toRemove := make(map[string]bool)
+		for _, userID := range input.SubjectIDs {
+			toRemove[userID] = true
+		}
+
+		// Filter out principals to remove and track them
+		var remainingPrincipals []*group.Principal
+		for _, p := range roleBinding.Principals {
+			if toRemove[p.UserID] {
+				principalsToRemove = append(principalsToRemove, p)
+			} else {
+				remainingPrincipals = append(remainingPrincipals, p)
+			}
+		}
+
+		roleBinding.Principals = remainingPrincipals
 	} else {
 		tx.Rollback()
 		return fmt.Errorf("unsupported subject type: %s", input.SubjectType)
@@ -288,15 +376,32 @@ func (s *RoleBindingService) UnassignRole(ctx context.Context, input UnassignRol
 		}
 	} else {
 		// Update binding associations (many-to-many)
-		if err := tx.Model(&roleBinding).Association("Groups").Replace(roleBinding.Groups); err != nil {
-			tx.Rollback()
-			return fmt.Errorf("failed to update binding groups: %w", err)
+		if input.SubjectType == "group" {
+			if err := tx.Model(&roleBinding).Association("Groups").Replace(roleBinding.Groups); err != nil {
+				tx.Rollback()
+				return fmt.Errorf("failed to update binding groups: %w", err)
+			}
+		} else if input.SubjectType == "user" {
+			if err := tx.Model(&roleBinding).Association("Principals").Replace(roleBinding.Principals); err != nil {
+				tx.Rollback()
+				return fmt.Errorf("failed to update binding principals: %w", err)
+			}
 		}
 	}
 
 	// Remove subject tuples for each removed group
 	for _, g := range groupsToRemove {
 		subjectTuple, err := roleBinding.GroupSubjectTuple(g)
+		if err != nil {
+			tx.Rollback()
+			return fmt.Errorf("failed to generate subject tuple: %w", err)
+		}
+		tuplesToRemoveList = append(tuplesToRemoveList, subjectTuple)
+	}
+
+	// Remove subject tuples for each removed principal
+	for _, p := range principalsToRemove {
+		subjectTuple, err := roleBinding.PrincipalSubjectTuple(p)
 		if err != nil {
 			tx.Rollback()
 			return fmt.Errorf("failed to generate subject tuple: %w", err)
@@ -412,12 +517,6 @@ func (s *RoleBindingService) BatchCreate(ctx context.Context, requests []CreateB
 			return nil, fmt.Errorf("invalid role UUID '%s': %w", req.RoleID, err)
 		}
 
-		subjectUUID, err := uuid.Parse(req.SubjectID)
-		if err != nil {
-			tx.Rollback()
-			return nil, fmt.Errorf("invalid subject UUID '%s': %w", req.SubjectID, err)
-		}
-
 		// Fetch role
 		var roleV2 role.RoleV2
 		if err := tx.First(&roleV2, "uuid = ?", roleUUID).Error; err != nil {
@@ -427,7 +526,7 @@ func (s *RoleBindingService) BatchCreate(ctx context.Context, requests []CreateB
 
 		// Find or create binding
 		var existingBinding rolebinding.RoleBinding
-		err = tx.Preload("Role").Preload("Groups").Where(
+		err = tx.Preload("Role").Preload("Groups").Preload("Principals").Where(
 			"resource_type = ? AND resource_id = ? AND role_id = ? AND tenant_id = ?",
 			req.ResourceType, req.ResourceID, roleV2.ID, req.TenantID,
 		).First(&existingBinding).Error
@@ -466,6 +565,12 @@ func (s *RoleBindingService) BatchCreate(ctx context.Context, requests []CreateB
 
 		// Add subject based on type
 		if req.SubjectType == "group" {
+			subjectUUID, err := uuid.Parse(req.SubjectID)
+			if err != nil {
+				tx.Rollback()
+				return nil, fmt.Errorf("invalid group UUID '%s': %w", req.SubjectID, err)
+			}
+
 			var g group.Group
 			if err := tx.First(&g, "uuid = ?", subjectUUID).Error; err != nil {
 				tx.Rollback()
@@ -492,6 +597,54 @@ func (s *RoleBindingService) BatchCreate(ctx context.Context, requests []CreateB
 				RoleName:     roleV2.Name,
 				SubjectUUID:  g.UUID,
 				SubjectType:  "group",
+				ResourceID:   req.ResourceID,
+				ResourceType: req.ResourceType,
+			})
+		} else if req.SubjectType == "user" {
+			// Find or create principal
+			var principal group.Principal
+			err := tx.Where("user_id = ? AND tenant_id = ?", req.SubjectID, req.TenantID).First(&principal).Error
+
+			if err == gorm.ErrRecordNotFound {
+				// Create new principal
+				principal = group.Principal{
+					UserID:   req.SubjectID,
+					Type:     group.PrincipalTypeUser,
+					TenantID: req.TenantID,
+				}
+				if err := tx.Create(&principal).Error; err != nil {
+					tx.Rollback()
+					return nil, fmt.Errorf("failed to create principal for user '%s': %w", req.SubjectID, err)
+				}
+			} else if err != nil {
+				tx.Rollback()
+				return nil, fmt.Errorf("failed to fetch principal for user '%s': %w", req.SubjectID, err)
+			}
+
+			// Use Association to properly manage many-to-many relationship
+			if err := tx.Model(&roleBinding).Association("Principals").Append(&principal); err != nil {
+				tx.Rollback()
+				return nil, fmt.Errorf("failed to add principal to binding: %w", err)
+			}
+			roleBinding.Principals = append(roleBinding.Principals, &principal)
+
+			// Add subject tuple
+			subjectTuple, err := roleBinding.PrincipalSubjectTuple(&principal)
+			if err != nil {
+				tx.Rollback()
+				return nil, fmt.Errorf("failed to generate subject tuple: %w", err)
+			}
+			tuplesToAdd = append(tuplesToAdd, subjectTuple)
+
+			// Generate a UUID from the principal ID for the response
+			// Since users don't have UUIDs, we use a deterministic UUID based on the principal ID
+			principalUUID := uuid.NewSHA1(uuid.NameSpaceOID, []byte(fmt.Sprintf("principal:%d", principal.ID)))
+
+			created = append(created, CreatedBinding{
+				RoleUUID:     roleV2.UUID,
+				RoleName:     roleV2.Name,
+				SubjectUUID:  principalUUID,
+				SubjectType:  "user",
 				ResourceID:   req.ResourceID,
 				ResourceType: req.ResourceType,
 			})
@@ -555,23 +708,24 @@ func (s *RoleBindingService) ListBySubject(
 	}
 
 	// Group by subject
-	subjectMap := make(map[uuid.UUID]*SubjectWithRoles)
+	subjectMap := make(map[string]*SubjectWithRoles) // Use string key to handle both UUIDs and user IDs
 
 	for _, binding := range bindings {
+		// Handle groups
 		for _, g := range binding.Groups {
 			// Apply subject filters if provided
 			if subjectType != "" && subjectType != "group" {
 				continue
 			}
 			if subjectID != "" {
-				subjectUUID, _ := uuid.Parse(subjectID)
-				if g.UUID != subjectUUID {
+				if g.UUID.String() != subjectID {
 					continue
 				}
 			}
 
-			if _, exists := subjectMap[g.UUID]; !exists {
-				subjectMap[g.UUID] = &SubjectWithRoles{
+			key := "group:" + g.UUID.String()
+			if _, exists := subjectMap[key]; !exists {
+				subjectMap[key] = &SubjectWithRoles{
 					SubjectUUID:  g.UUID,
 					SubjectType:  "group",
 					Roles:        []RoleInfo{},
@@ -580,7 +734,38 @@ func (s *RoleBindingService) ListBySubject(
 				}
 			}
 
-			subjectMap[g.UUID].Roles = append(subjectMap[g.UUID].Roles, RoleInfo{
+			subjectMap[key].Roles = append(subjectMap[key].Roles, RoleInfo{
+				UUID: binding.Role.UUID,
+				Name: binding.Role.Name,
+			})
+		}
+
+		// Handle principals (users)
+		for _, p := range binding.Principals {
+			// Apply subject filters if provided
+			if subjectType != "" && subjectType != "user" {
+				continue
+			}
+			if subjectID != "" {
+				if p.UserID != subjectID {
+					continue
+				}
+			}
+
+			key := "user:" + p.UserID
+			if _, exists := subjectMap[key]; !exists {
+				// Generate a deterministic UUID for the response
+				principalUUID := uuid.NewSHA1(uuid.NameSpaceOID, []byte(fmt.Sprintf("principal:%d", p.ID)))
+				subjectMap[key] = &SubjectWithRoles{
+					SubjectUUID:  principalUUID,
+					SubjectType:  "user",
+					Roles:        []RoleInfo{},
+					ResourceID:   resourceID,
+					ResourceType: resourceType,
+				}
+			}
+
+			subjectMap[key].Roles = append(subjectMap[key].Roles, RoleInfo{
 				UUID: binding.Role.UUID,
 				Name: binding.Role.Name,
 			})
@@ -607,11 +792,6 @@ func (s *RoleBindingService) UpdateForSubject(
 	roleIDs []string,
 	tenantID uuid.UUID,
 ) (*SubjectWithRoles, error) {
-	subjectUUID, err := uuid.Parse(subjectID)
-	if err != nil {
-		return nil, fmt.Errorf("invalid subject UUID: %w", err)
-	}
-
 	tx := s.db.Begin()
 	if tx.Error != nil {
 		return nil, fmt.Errorf("failed to start transaction: %w", tx.Error)
@@ -622,16 +802,51 @@ func (s *RoleBindingService) UpdateForSubject(
 		}
 	}()
 
-	// Fetch subject
-	if subjectType != "group" {
+	// Fetch subject based on type
+	var g *group.Group
+	var p *group.Principal
+	var subjectUUID uuid.UUID
+
+	if subjectType == "group" {
+		var err error
+		subjectUUID, err = uuid.Parse(subjectID)
+		if err != nil {
+			tx.Rollback()
+			return nil, fmt.Errorf("invalid group UUID: %w", err)
+		}
+
+		var grp group.Group
+		if err := tx.First(&grp, "uuid = ?", subjectUUID).Error; err != nil {
+			tx.Rollback()
+			return nil, fmt.Errorf("group not found: %w", err)
+		}
+		g = &grp
+	} else if subjectType == "user" {
+		// Find or create principal
+		var principal group.Principal
+		err := tx.Where("user_id = ? AND tenant_id = ?", subjectID, tenantID).First(&principal).Error
+
+		if err == gorm.ErrRecordNotFound {
+			// Create new principal
+			principal = group.Principal{
+				UserID:   subjectID,
+				Type:     group.PrincipalTypeUser,
+				TenantID: tenantID,
+			}
+			if err := tx.Create(&principal).Error; err != nil {
+				tx.Rollback()
+				return nil, fmt.Errorf("failed to create principal for user '%s': %w", subjectID, err)
+			}
+		} else if err != nil {
+			tx.Rollback()
+			return nil, fmt.Errorf("failed to fetch principal for user '%s': %w", subjectID, err)
+		}
+		p = &principal
+		// Generate a deterministic UUID for the response
+		subjectUUID = uuid.NewSHA1(uuid.NameSpaceOID, []byte(fmt.Sprintf("principal:%d", principal.ID)))
+	} else {
 		tx.Rollback()
 		return nil, fmt.Errorf("unsupported subject type: %s", subjectType)
-	}
-
-	var g group.Group
-	if err := tx.First(&g, "uuid = ?", subjectUUID).Error; err != nil {
-		tx.Rollback()
-		return nil, fmt.Errorf("subject not found: %w", err)
 	}
 
 	// Find all existing bindings for this resource and subject
@@ -651,62 +866,124 @@ func (s *RoleBindingService) UpdateForSubject(
 	for i := range resourceBindings {
 		binding := &resourceBindings[i]
 		hasSubject := false
-		for _, bg := range binding.Groups {
-			if bg.UUID == subjectUUID {
-				hasSubject = true
-				break
-			}
-		}
 
-		if hasSubject {
-			// Remove subject from binding
-			var remainingGroups []*group.Group
+		if subjectType == "group" {
 			for _, bg := range binding.Groups {
-				if bg.UUID != subjectUUID {
-					remainingGroups = append(remainingGroups, bg)
+				if bg.UUID == subjectUUID {
+					hasSubject = true
+					break
 				}
 			}
 
-			// Generate tuple to remove
-			subjectTuple, err := binding.GroupSubjectTuple(&g)
-			if err != nil {
-				tx.Rollback()
-				return nil, fmt.Errorf("failed to generate subject tuple: %w", err)
-			}
-			tuplesToRemove = append(tuplesToRemove, subjectTuple)
+			if hasSubject {
+				// Remove subject from binding
+				var remainingGroups []*group.Group
+				for _, bg := range binding.Groups {
+					if bg.UUID != subjectUUID {
+						remainingGroups = append(remainingGroups, bg)
+					}
+				}
 
-			// Check if binding is orphaned
-			if len(remainingGroups) == 0 && len(binding.Principals) == 0 {
-				// Remove binding tuples
-				bindingTuples, err := binding.BindingTuples()
+				// Generate tuple to remove
+				subjectTuple, err := binding.GroupSubjectTuple(g)
 				if err != nil {
 					tx.Rollback()
-					return nil, fmt.Errorf("failed to generate binding tuples: %w", err)
+					return nil, fmt.Errorf("failed to generate subject tuple: %w", err)
 				}
-				tuplesToRemove = append(tuplesToRemove, bindingTuples...)
+				tuplesToRemove = append(tuplesToRemove, subjectTuple)
 
-				// Clear associations before deleting (many-to-many join tables)
-				if err := tx.Model(binding).Association("Groups").Clear(); err != nil {
-					tx.Rollback()
-					return nil, fmt.Errorf("failed to clear binding groups: %w", err)
+				// Check if binding is orphaned
+				if len(remainingGroups) == 0 && len(binding.Principals) == 0 {
+					// Remove binding tuples
+					bindingTuples, err := binding.BindingTuples()
+					if err != nil {
+						tx.Rollback()
+						return nil, fmt.Errorf("failed to generate binding tuples: %w", err)
+					}
+					tuplesToRemove = append(tuplesToRemove, bindingTuples...)
+
+					// Clear associations before deleting (many-to-many join tables)
+					if err := tx.Model(binding).Association("Groups").Clear(); err != nil {
+						tx.Rollback()
+						return nil, fmt.Errorf("failed to clear binding groups: %w", err)
+					}
+					if err := tx.Model(binding).Association("Principals").Clear(); err != nil {
+						tx.Rollback()
+						return nil, fmt.Errorf("failed to clear binding principals: %w", err)
+					}
+
+					// Delete binding
+					if err := tx.Delete(binding).Error; err != nil {
+						tx.Rollback()
+						return nil, fmt.Errorf("failed to delete binding: %w", err)
+					}
+				} else {
+					// Update binding associations (many-to-many)
+					if err := tx.Model(binding).Association("Groups").Replace(remainingGroups); err != nil {
+						tx.Rollback()
+						return nil, fmt.Errorf("failed to update binding groups: %w", err)
+					}
+					binding.Groups = remainingGroups
 				}
-				if err := tx.Model(binding).Association("Principals").Clear(); err != nil {
-					tx.Rollback()
-					return nil, fmt.Errorf("failed to clear binding principals: %w", err)
+			}
+		} else if subjectType == "user" {
+			for _, bp := range binding.Principals {
+				if bp.UserID == subjectID {
+					hasSubject = true
+					break
+				}
+			}
+
+			if hasSubject {
+				// Remove subject from binding
+				var remainingPrincipals []*group.Principal
+				for _, bp := range binding.Principals {
+					if bp.UserID != subjectID {
+						remainingPrincipals = append(remainingPrincipals, bp)
+					}
 				}
 
-				// Delete binding
-				if err := tx.Delete(binding).Error; err != nil {
+				// Generate tuple to remove
+				subjectTuple, err := binding.PrincipalSubjectTuple(p)
+				if err != nil {
 					tx.Rollback()
-					return nil, fmt.Errorf("failed to delete binding: %w", err)
+					return nil, fmt.Errorf("failed to generate subject tuple: %w", err)
 				}
-			} else {
-				// Update binding associations (many-to-many)
-				if err := tx.Model(binding).Association("Groups").Replace(remainingGroups); err != nil {
-					tx.Rollback()
-					return nil, fmt.Errorf("failed to update binding groups: %w", err)
+				tuplesToRemove = append(tuplesToRemove, subjectTuple)
+
+				// Check if binding is orphaned
+				if len(binding.Groups) == 0 && len(remainingPrincipals) == 0 {
+					// Remove binding tuples
+					bindingTuples, err := binding.BindingTuples()
+					if err != nil {
+						tx.Rollback()
+						return nil, fmt.Errorf("failed to generate binding tuples: %w", err)
+					}
+					tuplesToRemove = append(tuplesToRemove, bindingTuples...)
+
+					// Clear associations before deleting (many-to-many join tables)
+					if err := tx.Model(binding).Association("Groups").Clear(); err != nil {
+						tx.Rollback()
+						return nil, fmt.Errorf("failed to clear binding groups: %w", err)
+					}
+					if err := tx.Model(binding).Association("Principals").Clear(); err != nil {
+						tx.Rollback()
+						return nil, fmt.Errorf("failed to clear binding principals: %w", err)
+					}
+
+					// Delete binding
+					if err := tx.Delete(binding).Error; err != nil {
+						tx.Rollback()
+						return nil, fmt.Errorf("failed to delete binding: %w", err)
+					}
+				} else {
+					// Update binding associations (many-to-many)
+					if err := tx.Model(binding).Association("Principals").Replace(remainingPrincipals); err != nil {
+						tx.Rollback()
+						return nil, fmt.Errorf("failed to update binding principals: %w", err)
+					}
+					binding.Principals = remainingPrincipals
 				}
-				binding.Groups = remainingGroups
 			}
 		}
 	}
@@ -768,19 +1045,35 @@ func (s *RoleBindingService) UpdateForSubject(
 		}
 
 		// Add subject to binding (use Association for many-to-many)
-		if err := tx.Model(&roleBinding).Association("Groups").Append(&g); err != nil {
-			tx.Rollback()
-			return nil, fmt.Errorf("failed to add group to binding: %w", err)
-		}
-		roleBinding.Groups = append(roleBinding.Groups, &g)
+		if subjectType == "group" {
+			if err := tx.Model(&roleBinding).Association("Groups").Append(g); err != nil {
+				tx.Rollback()
+				return nil, fmt.Errorf("failed to add group to binding: %w", err)
+			}
+			roleBinding.Groups = append(roleBinding.Groups, g)
 
-		// Add subject tuple
-		subjectTuple, err := roleBinding.GroupSubjectTuple(&g)
-		if err != nil {
-			tx.Rollback()
-			return nil, fmt.Errorf("failed to generate subject tuple: %w", err)
+			// Add subject tuple
+			subjectTuple, err := roleBinding.GroupSubjectTuple(g)
+			if err != nil {
+				tx.Rollback()
+				return nil, fmt.Errorf("failed to generate subject tuple: %w", err)
+			}
+			tuplesToAdd = append(tuplesToAdd, subjectTuple)
+		} else if subjectType == "user" {
+			if err := tx.Model(&roleBinding).Association("Principals").Append(p); err != nil {
+				tx.Rollback()
+				return nil, fmt.Errorf("failed to add principal to binding: %w", err)
+			}
+			roleBinding.Principals = append(roleBinding.Principals, p)
+
+			// Add subject tuple
+			subjectTuple, err := roleBinding.PrincipalSubjectTuple(p)
+			if err != nil {
+				tx.Rollback()
+				return nil, fmt.Errorf("failed to generate subject tuple: %w", err)
+			}
+			tuplesToAdd = append(tuplesToAdd, subjectTuple)
 		}
-		tuplesToAdd = append(tuplesToAdd, subjectTuple)
 
 		resultRoles = append(resultRoles, RoleInfo{
 			UUID: roleV2.UUID,
@@ -813,8 +1106,8 @@ func (s *RoleBindingService) UpdateForSubject(
 	}
 
 	return &SubjectWithRoles{
-		SubjectUUID:  g.UUID,
-		SubjectType:  "group",
+		SubjectUUID:  subjectUUID,
+		SubjectType:  subjectType,
 		Roles:        resultRoles,
 		ResourceID:   resourceID,
 		ResourceType: resourceType,

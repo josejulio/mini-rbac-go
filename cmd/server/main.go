@@ -89,7 +89,7 @@ func main() {
 	fmt.Println("[4/5] Initializing application services...")
 	roleService := service.NewRoleV2Service(roleRepo, bindingRepo, replicator, db.DB)
 	groupService := service.NewGroupService(groupRepo, principalRepo, replicator, db.DB)
-	bindingService := service.NewRoleBindingService(bindingRepo, roleRepo, groupRepo, replicator, db.DB)
+	bindingService := service.NewRoleBindingService(bindingRepo, roleRepo, groupRepo, principalRepo, replicator, db.DB)
 	workspaceService := service.NewWorkspaceService(workspaceRepo, replicator, db.DB)
 
 	// Initialize handlers

@@ -121,3 +121,38 @@ grpcurl -plaintext \
        }
      }' \
   localhost:9081 kessel.inventory.v1beta2.KesselInventoryService.Check
+
+# Check access for alice (not in admin group)
+
+grpcurl -plaintext \
+  -d '{
+       "object": {
+         "resource_type": "k8s_cluster", "resource_id": "cluster-1", "reporter": {"type": "acm"}
+       },
+       "relation": "view",
+       "subject": {
+         "resource": {"resource_type": "principal", "resource_id": "alice", "reporter": {"type": "rbac"}}
+       }
+     }' \
+  localhost:9081 kessel.inventory.v1beta2.KesselInventoryService.Check
+
+# Grant access to alice
+curl -XPUT "http://localhost:8085/api/rbac/v2/role-bindings/by-subject?resource_type=rbac/workspace&resource_id=${ENGINEERING_WP}&subject_type=user&subject_id=alice" \
+  -H "Content-Type: application/json" \
+  -d "{
+        \"roles\": [ { \"id\": \"${ROLE_ID}\" } ]
+      }"
+
+sleep 2
+
+grpcurl -plaintext \
+  -d '{
+       "object": {
+         "resource_type": "k8s_cluster", "resource_id": "cluster-1", "reporter": {"type": "acm"}
+       },
+       "relation": "view",
+       "subject": {
+         "resource": {"resource_type": "principal", "resource_id": "alice", "reporter": {"type": "rbac"}}
+       }
+     }' \
+  localhost:9081 kessel.inventory.v1beta2.KesselInventoryService.Check

@@ -2,6 +2,7 @@ package service_test
 
 import (
 	"context"
+	"fmt"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -23,6 +24,7 @@ var _ = Describe("RoleBindingService", func() {
 		roleRepo       role.RoleRepository
 		bindingRepo    rolebinding.Repository
 		groupRepo      group.Repository
+		principalRepo  group.PrincipalRepository
 		replicator     *mockReplicator
 		testTenantID   uuid.UUID
 		testRole       *role.RoleV2
@@ -46,9 +48,10 @@ var _ = Describe("RoleBindingService", func() {
 		roleRepo = database.NewRoleRepository(db)
 		bindingRepo = database.NewRoleBindingRepository(db)
 		groupRepo = database.NewGroupRepository(db)
+		principalRepo = database.NewPrincipalRepository(db)
 		replicator = &mockReplicator{shouldFail: false, capturedEvents: nil}
 
-		bindingService = service.NewRoleBindingService(bindingRepo, roleRepo, groupRepo, replicator, db)
+		bindingService = service.NewRoleBindingService(bindingRepo, roleRepo, groupRepo, principalRepo, replicator, db)
 
 		testTenantID = uuid.New()
 		ctx = context.Background()
@@ -93,7 +96,7 @@ var _ = Describe("RoleBindingService", func() {
 					ResourceType: "workspace",
 					ResourceID:   "default",
 					SubjectType:  "group",
-					SubjectUUIDs: []uuid.UUID{testGroup.UUID},
+					SubjectIDs:   []string{testGroup.UUID.String()},
 					TenantID:     testTenantID,
 				}
 
@@ -115,6 +118,74 @@ var _ = Describe("RoleBindingService", func() {
 				Expect(dbBinding.Groups[0].UUID).To(Equal(testGroup.UUID))
 			})
 		})
+
+		Context("when adding users to a binding", func() {
+			It("should create principals and manage many-to-many association", func() {
+				input := service.AssignRoleInput{
+					RoleUUID:     testRole.UUID,
+					ResourceType: "workspace",
+					ResourceID:   "default",
+					SubjectType:  "user",
+					SubjectIDs:   []string{"alice", "bob"},
+					TenantID:     testTenantID,
+				}
+
+				binding, err := bindingService.AssignRole(ctx, input)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(binding).NotTo(BeNil())
+
+				// Verify principals were created
+				var principals []group.Principal
+				err = db.Where("user_id IN ? AND tenant_id = ?", []string{"alice", "bob"}, testTenantID).Find(&principals).Error
+				Expect(err).NotTo(HaveOccurred())
+				Expect(principals).To(HaveLen(2))
+
+				// Verify join table entries exist
+				var joinCount int64
+				db.Table("role_binding_principals").Where("role_binding_id = ?", binding.ID).Count(&joinCount)
+				Expect(joinCount).To(Equal(int64(2)))
+
+				// Verify we can query the binding with preloaded principals
+				var dbBinding rolebinding.RoleBinding
+				err = db.Preload("Principals").First(&dbBinding, "uuid = ?", binding.UUID).Error
+				Expect(err).NotTo(HaveOccurred())
+				Expect(dbBinding.Principals).To(HaveLen(2))
+
+				userIDs := []string{dbBinding.Principals[0].UserID, dbBinding.Principals[1].UserID}
+				Expect(userIDs).To(ContainElements("alice", "bob"))
+			})
+
+			It("should reuse existing principals", func() {
+				// Create a principal first
+				principal := &group.Principal{
+					UserID:   "alice",
+					Type:     group.PrincipalTypeUser,
+					TenantID: testTenantID,
+				}
+				err := db.Create(principal).Error
+				Expect(err).NotTo(HaveOccurred())
+
+				input := service.AssignRoleInput{
+					RoleUUID:     testRole.UUID,
+					ResourceType: "workspace",
+					ResourceID:   "default",
+					SubjectType:  "user",
+					SubjectIDs:   []string{"alice"},
+					TenantID:     testTenantID,
+				}
+
+				binding, err := bindingService.AssignRole(ctx, input)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(binding).NotTo(BeNil())
+
+				// Verify only one principal exists
+				var count int64
+				db.Model(&group.Principal{}).Where("user_id = ? AND tenant_id = ?", "alice", testTenantID).Count(&count)
+				Expect(count).To(Equal(int64(1)))
+			})
+		})
 	})
 
 	Describe("UnassignRole", func() {
@@ -127,7 +198,7 @@ var _ = Describe("RoleBindingService", func() {
 				ResourceType: "workspace",
 				ResourceID:   "default",
 				SubjectType:  "group",
-				SubjectUUIDs: []uuid.UUID{testGroup.UUID},
+				SubjectIDs:   []string{testGroup.UUID.String()},
 				TenantID:     testTenantID,
 			}
 			var err error
@@ -145,7 +216,7 @@ var _ = Describe("RoleBindingService", func() {
 					ResourceType: "workspace",
 					ResourceID:   "default",
 					SubjectType:  "group",
-					SubjectUUIDs: []uuid.UUID{testGroup.UUID},
+					SubjectIDs:   []string{testGroup.UUID.String()},
 					TenantID:     testTenantID,
 				}
 
@@ -162,6 +233,84 @@ var _ = Describe("RoleBindingService", func() {
 				var joinCount int64
 				db.Table("role_binding_groups").Where("role_binding_id = ?", testBinding.ID).Count(&joinCount)
 				Expect(joinCount).To(Equal(int64(0)))
+			})
+		})
+
+		Context("when removing users from binding", func() {
+			It("should delete binding and clear join table when last user removed", func() {
+				// Create a binding with users
+				input := service.AssignRoleInput{
+					RoleUUID:     testRole.UUID,
+					ResourceType: "workspace",
+					ResourceID:   "test-workspace",
+					SubjectType:  "user",
+					SubjectIDs:   []string{"alice", "bob"},
+					TenantID:     testTenantID,
+				}
+				binding, err := bindingService.AssignRole(ctx, input)
+				Expect(err).NotTo(HaveOccurred())
+
+				// Remove all users
+				unassignInput := service.UnassignRoleInput{
+					RoleUUID:     testRole.UUID,
+					ResourceType: "workspace",
+					ResourceID:   "test-workspace",
+					SubjectType:  "user",
+					SubjectIDs:   []string{"alice", "bob"},
+					TenantID:     testTenantID,
+				}
+
+				err = bindingService.UnassignRole(ctx, unassignInput)
+
+				Expect(err).NotTo(HaveOccurred())
+
+				// Verify binding was deleted
+				var count int64
+				db.Model(&rolebinding.RoleBinding{}).Where("uuid = ?", binding.UUID).Count(&count)
+				Expect(count).To(Equal(int64(0)))
+
+				// Verify join table entries were cleared
+				var joinCount int64
+				db.Table("role_binding_principals").Where("role_binding_id = ?", binding.ID).Count(&joinCount)
+				Expect(joinCount).To(Equal(int64(0)))
+			})
+
+			It("should keep binding when some users remain", func() {
+				// Create a binding with users
+				input := service.AssignRoleInput{
+					RoleUUID:     testRole.UUID,
+					ResourceType: "workspace",
+					ResourceID:   "test-workspace",
+					SubjectType:  "user",
+					SubjectIDs:   []string{"alice", "bob", "charlie"},
+					TenantID:     testTenantID,
+				}
+				binding, err := bindingService.AssignRole(ctx, input)
+				Expect(err).NotTo(HaveOccurred())
+
+				// Remove only one user
+				unassignInput := service.UnassignRoleInput{
+					RoleUUID:     testRole.UUID,
+					ResourceType: "workspace",
+					ResourceID:   "test-workspace",
+					SubjectType:  "user",
+					SubjectIDs:   []string{"alice"},
+					TenantID:     testTenantID,
+				}
+
+				err = bindingService.UnassignRole(ctx, unassignInput)
+
+				Expect(err).NotTo(HaveOccurred())
+
+				// Verify binding still exists
+				var dbBinding rolebinding.RoleBinding
+				err = db.Preload("Principals").First(&dbBinding, "uuid = ?", binding.UUID).Error
+				Expect(err).NotTo(HaveOccurred())
+				Expect(dbBinding.Principals).To(HaveLen(2))
+
+				userIDs := []string{dbBinding.Principals[0].UserID, dbBinding.Principals[1].UserID}
+				Expect(userIDs).To(ContainElements("bob", "charlie"))
+				Expect(userIDs).NotTo(ContainElement("alice"))
 			})
 		})
 	})
@@ -200,7 +349,7 @@ var _ = Describe("RoleBindingService", func() {
 				ResourceType: "workspace",
 				ResourceID:   "default",
 				SubjectType:  "group",
-				SubjectUUIDs: []uuid.UUID{testGroup.UUID},
+				SubjectIDs:   []string{testGroup.UUID.String()},
 				TenantID:     testTenantID,
 			}
 			_, err = bindingService.AssignRole(ctx, input)
@@ -385,10 +534,99 @@ var _ = Describe("RoleBindingService", func() {
 				}
 			})
 		})
+
+		Context("when updating user subject bindings", func() {
+			It("should properly manage principals and associations", func() {
+				// Create initial binding for user
+				result, err := bindingService.UpdateForSubject(
+					ctx,
+					"workspace",
+					"user-workspace",
+					"user",
+					"alice",
+					[]string{testRole.UUID.String()},
+					testTenantID,
+				)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result).NotTo(BeNil())
+				Expect(result.Roles).To(HaveLen(1))
+				Expect(result.SubjectType).To(Equal("user"))
+
+				// Verify principal was created
+				var principal group.Principal
+				err = db.Where("user_id = ? AND tenant_id = ?", "alice", testTenantID).First(&principal).Error
+				Expect(err).NotTo(HaveOccurred())
+
+				// Verify join table entry exists
+				var joinCount int64
+				db.Table("role_binding_principals").
+					Joins("JOIN principals ON principals.id = role_binding_principals.principal_id").
+					Where("principals.user_id = ?", "alice").
+					Count(&joinCount)
+				Expect(joinCount).To(Equal(int64(1)))
+
+				// Update to different role
+				result, err = bindingService.UpdateForSubject(
+					ctx,
+					"workspace",
+					"user-workspace",
+					"user",
+					"alice",
+					[]string{role2.UUID.String()},
+					testTenantID,
+				)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result.Roles).To(HaveLen(1))
+				Expect(result.Roles[0].UUID).To(Equal(role2.UUID))
+
+				// Verify still only one principal record
+				var count int64
+				db.Model(&group.Principal{}).Where("user_id = ? AND tenant_id = ?", "alice", testTenantID).Count(&count)
+				Expect(count).To(Equal(int64(1)))
+			})
+
+			It("should remove all bindings when empty role array provided", func() {
+				// Create initial binding for user
+				_, err := bindingService.UpdateForSubject(
+					ctx,
+					"workspace",
+					"user-workspace",
+					"user",
+					"bob",
+					[]string{testRole.UUID.String()},
+					testTenantID,
+				)
+				Expect(err).NotTo(HaveOccurred())
+
+				// Remove all roles
+				result, err := bindingService.UpdateForSubject(
+					ctx,
+					"workspace",
+					"user-workspace",
+					"user",
+					"bob",
+					[]string{},
+					testTenantID,
+				)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result.Roles).To(HaveLen(0))
+
+				// Verify no join table entries remain
+				var joinCount int64
+				db.Table("role_binding_principals").
+					Joins("JOIN principals ON principals.id = role_binding_principals.principal_id").
+					Where("principals.user_id = ?", "bob").
+					Count(&joinCount)
+				Expect(joinCount).To(Equal(int64(0)))
+			})
+		})
 	})
 
 	Describe("BatchCreate", func() {
-		Context("when creating multiple bindings", func() {
+		Context("when creating multiple bindings with groups", func() {
 			It("should properly manage many-to-many associations", func() {
 				requests := []service.CreateBindingRequest{
 					{
@@ -413,6 +651,228 @@ var _ = Describe("RoleBindingService", func() {
 					Where("groups.uuid = ?", testGroup.UUID).
 					Count(&joinCount)
 				Expect(joinCount).To(Equal(int64(1)))
+			})
+		})
+
+		Context("when creating multiple bindings with users", func() {
+			It("should create principals and manage associations", func() {
+				requests := []service.CreateBindingRequest{
+					{
+						RoleID:       testRole.UUID.String(),
+						ResourceType: "workspace",
+						ResourceID:   "default",
+						SubjectType:  "user",
+						SubjectID:    "alice",
+						TenantID:     testTenantID,
+					},
+					{
+						RoleID:       testRole.UUID.String(),
+						ResourceType: "workspace",
+						ResourceID:   "workspace-2",
+						SubjectType:  "user",
+						SubjectID:    "bob",
+						TenantID:     testTenantID,
+					},
+				}
+
+				created, err := bindingService.BatchCreate(ctx, requests)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(created).To(HaveLen(2))
+
+				// Verify principals were created
+				var principals []group.Principal
+				err = db.Where("user_id IN ? AND tenant_id = ?", []string{"alice", "bob"}, testTenantID).Find(&principals).Error
+				Expect(err).NotTo(HaveOccurred())
+				Expect(principals).To(HaveLen(2))
+
+				// Verify join table entries exist
+				var joinCount int64
+				db.Table("role_binding_principals").
+					Joins("JOIN principals ON principals.id = role_binding_principals.principal_id").
+					Where("principals.user_id IN ?", []string{"alice", "bob"}).
+					Count(&joinCount)
+				Expect(joinCount).To(Equal(int64(2)))
+			})
+
+			It("should reuse existing principals in batch create", func() {
+				// Pre-create a principal
+				principal := &group.Principal{
+					UserID:   "alice",
+					Type:     group.PrincipalTypeUser,
+					TenantID: testTenantID,
+				}
+				err := db.Create(principal).Error
+				Expect(err).NotTo(HaveOccurred())
+
+				requests := []service.CreateBindingRequest{
+					{
+						RoleID:       testRole.UUID.String(),
+						ResourceType: "workspace",
+						ResourceID:   "default",
+						SubjectType:  "user",
+						SubjectID:    "alice",
+						TenantID:     testTenantID,
+					},
+				}
+
+				created, err := bindingService.BatchCreate(ctx, requests)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(created).To(HaveLen(1))
+
+				// Verify only one principal exists
+				var count int64
+				db.Model(&group.Principal{}).Where("user_id = ? AND tenant_id = ?", "alice", testTenantID).Count(&count)
+				Expect(count).To(Equal(int64(1)))
+			})
+		})
+
+		Context("when creating bindings with mixed subjects", func() {
+			It("should handle both groups and users", func() {
+				requests := []service.CreateBindingRequest{
+					{
+						RoleID:       testRole.UUID.String(),
+						ResourceType: "workspace",
+						ResourceID:   "default",
+						SubjectType:  "group",
+						SubjectID:    testGroup.UUID.String(),
+						TenantID:     testTenantID,
+					},
+					{
+						RoleID:       testRole.UUID.String(),
+						ResourceType: "workspace",
+						ResourceID:   "default",
+						SubjectType:  "user",
+						SubjectID:    "alice",
+						TenantID:     testTenantID,
+					},
+				}
+
+				created, err := bindingService.BatchCreate(ctx, requests)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(created).To(HaveLen(2))
+
+				// Verify the binding has both a group and a principal
+				var binding rolebinding.RoleBinding
+				err = db.Preload("Groups").Preload("Principals").
+					Where("resource_type = ? AND resource_id = ? AND tenant_id = ?",
+						"workspace", "default", testTenantID).
+					First(&binding).Error
+				Expect(err).NotTo(HaveOccurred())
+
+				Expect(binding.Groups).To(HaveLen(1))
+				Expect(binding.Principals).To(HaveLen(1))
+				Expect(binding.Groups[0].UUID).To(Equal(testGroup.UUID))
+				Expect(binding.Principals[0].UserID).To(Equal("alice"))
+			})
+		})
+	})
+
+	Describe("ListBySubject", func() {
+		BeforeEach(func() {
+			// Create bindings with both groups and users
+			input1 := service.AssignRoleInput{
+				RoleUUID:     testRole.UUID,
+				ResourceType: "workspace",
+				ResourceID:   "default",
+				SubjectType:  "group",
+				SubjectIDs:   []string{testGroup.UUID.String()},
+				TenantID:     testTenantID,
+			}
+			_, err := bindingService.AssignRole(ctx, input1)
+			Expect(err).NotTo(HaveOccurred())
+
+			input2 := service.AssignRoleInput{
+				RoleUUID:     testRole.UUID,
+				ResourceType: "workspace",
+				ResourceID:   "default",
+				SubjectType:  "user",
+				SubjectIDs:   []string{"alice", "bob"},
+				TenantID:     testTenantID,
+			}
+			_, err = bindingService.AssignRole(ctx, input2)
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		Context("when listing all subjects", func() {
+			It("should return both groups and users", func() {
+				subjects, err := bindingService.ListBySubject(
+					ctx,
+					"workspace",
+					"default",
+					testTenantID,
+					"",
+					"",
+				)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(subjects).To(HaveLen(3)) // 1 group + 2 users
+
+				// Check we have one group and two users
+				groupCount := 0
+				userCount := 0
+				for _, s := range subjects {
+					if s.SubjectType == "group" {
+						groupCount++
+					} else if s.SubjectType == "user" {
+						userCount++
+					}
+				}
+				Expect(groupCount).To(Equal(1))
+				Expect(userCount).To(Equal(2))
+			})
+		})
+
+		Context("when filtering by subject type", func() {
+			It("should return only groups when subject_type is group", func() {
+				subjects, err := bindingService.ListBySubject(
+					ctx,
+					"workspace",
+					"default",
+					testTenantID,
+					"group",
+					"",
+				)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(subjects).To(HaveLen(1))
+				Expect(subjects[0].SubjectType).To(Equal("group"))
+			})
+
+			It("should return only users when subject_type is user", func() {
+				subjects, err := bindingService.ListBySubject(
+					ctx,
+					"workspace",
+					"default",
+					testTenantID,
+					"user",
+					"",
+				)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(subjects).To(HaveLen(2))
+				for _, s := range subjects {
+					Expect(s.SubjectType).To(Equal("user"))
+				}
+			})
+		})
+
+		Context("when filtering by subject ID", func() {
+			It("should return specific user", func() {
+				subjects, err := bindingService.ListBySubject(
+					ctx,
+					"workspace",
+					"default",
+					testTenantID,
+					"user",
+					"alice",
+				)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(subjects).To(HaveLen(1))
+				Expect(subjects[0].SubjectType).To(Equal("user"))
 			})
 		})
 	})
