@@ -156,3 +156,100 @@ grpcurl -plaintext \
        }
      }' \
   localhost:9081 kessel.inventory.v1beta2.KesselInventoryService.Check
+
+
+## Report a second cluster in a management workspace
+MANAGEMENT_WP="$(curl -XPOST "http://localhost:8085/api/rbac/v2/workspaces" \
+  -H "Content-Type: application/json" \
+  -d "{
+        \"name\": \"Engineering\",
+        \"parent_id\": \"${ROOT_WORKSPACE_ID}\"
+      }" | jq '.id' -r)"
+
+grpcurl -plaintext -d "{
+            \"type\": \"k8s_cluster\",
+            \"reporterType\": \"acm\",
+            \"reporterInstanceId\": \"1234\",
+            \"representations\": {
+              \"metadata\": {
+                \"localResourceId\": \"cluster-2\",
+                \"apiHref\": \"http://somewhere\",
+                \"reporterVersion\": \"1.0.0\"
+              },
+              \"common\": {
+                \"workspace_id\": \"${MANAGEMENT_WP}\"
+              },
+              \"reporter\": {
+                \"external_cluster_id\": \"cluster-2\",
+                \"cluster_status\": \"READY\",
+                \"cluster_reason\": \"running\",
+                \"kube_version\": \"1.0.0\",
+                \"kube_vendor\": \"OPENSHIFT\",
+                \"vendor_version\": \"3.0.0\",
+                \"cloud_platform\": \"BAREMETAL_UPI\",
+                \"nodes\": []
+              }
+            }
+          }" localhost:9081 kessel.inventory.v1beta2.KesselInventoryService.ReportResource
+sleep 2
+
+# Check access for alice and jdoe
+grpcurl -plaintext \
+  -d '{
+       "object": {
+         "resource_type": "k8s_cluster", "resource_id": "cluster-2", "reporter": {"type": "acm"}
+       },
+       "relation": "view",
+       "subject": {
+         "resource": {"resource_type": "principal", "resource_id": "alice", "reporter": {"type": "rbac"}}
+       }
+     }' \
+  localhost:9081 kessel.inventory.v1beta2.KesselInventoryService.Check
+
+grpcurl -plaintext \
+  -d '{
+       "object": {
+         "resource_type": "k8s_cluster", "resource_id": "cluster-2", "reporter": {"type": "acm"}
+       },
+       "relation": "view",
+       "subject": {
+         "resource": {"resource_type": "principal", "resource_id": "jdoe", "reporter": {"type": "rbac"}}
+       }
+     }' \
+  localhost:9081 kessel.inventory.v1beta2.KesselInventoryService.Check
+
+# Grant access to alice by binding the cluster instead of the workspace
+curl -XPUT "http://localhost:8085/api/rbac/v2/role-bindings/by-subject?resource_type=acm/k8s_cluster&resource_id=cluster-2&subject_type=user&subject_id=alice" \
+  -H "Content-Type: application/json" \
+  -d "{
+        \"roles\": [ { \"id\": \"${ROLE_ID}\" } ]
+      }"
+
+sleep 2
+
+# Check permissions again
+
+grpcurl -plaintext \
+  -d '{
+       "object": {
+         "resource_type": "k8s_cluster", "resource_id": "cluster-2", "reporter": {"type": "acm"}
+       },
+       "relation": "view",
+       "subject": {
+         "resource": {"resource_type": "principal", "resource_id": "alice", "reporter": {"type": "rbac"}}
+       }
+     }' \
+  localhost:9081 kessel.inventory.v1beta2.KesselInventoryService.Check
+
+grpcurl -plaintext \
+  -d '{
+       "object": {
+         "resource_type": "k8s_cluster", "resource_id": "cluster-2", "reporter": {"type": "acm"}
+       },
+       "relation": "view",
+       "subject": {
+         "resource": {"resource_type": "principal", "resource_id": "jdoe", "reporter": {"type": "rbac"}}
+       }
+     }' \
+  localhost:9081 kessel.inventory.v1beta2.KesselInventoryService.Check
+
