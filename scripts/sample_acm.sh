@@ -43,16 +43,16 @@ curl -XPOST "http://localhost:8085/api/rbac/v2/groups/${GROUP_ID}/principals" \
       }'
 
 # Create a role binding (default workspace, admin group, admin role)
-DEFAULT_WORKSPACE_ID="$(curl "http://localhost:8085/api/rbac/v2/workspaces?type=default" | jq ".data[0].id" -r)"
-curl -XPUT "http://localhost:8085/api/rbac/v2/role-bindings/by-subject?resource_type=rbac/workspace&resource_id=${DEFAULT_WORKSPACE_ID}&subject_type=group&subject_id=${GROUP_ID}" \
+DEFAULT_WORKSPACE_ID="$(curl "http://localhost:8085/api/rbac/v2/workspaces/?type=default" | jq ".data[0].id" -r)"
+curl -XPUT "http://localhost:8085/api/rbac/v2/role-bindings/by-subject/?resource_type=rbac/workspace&resource_id=${DEFAULT_WORKSPACE_ID}&subject_type=group&subject_id=${GROUP_ID}" \
   -H "Content-Type: application/json" \
   -d "{
         \"roles\": [ { \"id\": \"${ROLE_ID}\" } ]
       }"
 
 # Create a engineering workspace under the root workspace
-ROOT_WORKSPACE_ID="$(curl "http://localhost:8085/api/rbac/v2/workspaces?type=root" | jq ".data[0].id" -r)"
-ENGINEERING_WP="$(curl -XPOST "http://localhost:8085/api/rbac/v2/workspaces" \
+ROOT_WORKSPACE_ID="$(curl "http://localhost:8085/api/rbac/v2/workspaces/?type=root" | jq ".data[0].id" -r)"
+ENGINEERING_WP="$(curl -XPOST "http://localhost:8085/api/rbac/v2/workspaces/" \
   -H "Content-Type: application/json" \
   -d "{
         \"name\": \"Engineering\",
